@@ -24,6 +24,7 @@ import time
 from ibapi.common import MarketDataTypeEnum as IBMarketDataTypeEnum
 
 from nautilus_trader.adapters.interactive_brokers.common import IB
+from nautilus_trader.adapters.interactive_brokers.common import IB_VENUE
 from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersDataClientConfig
 from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersExecClientConfig
 from nautilus_trader.adapters.interactive_brokers.config import (
@@ -76,23 +77,38 @@ class DemoStrategy(Strategy):
         Handle strategy start event.
         """
         self.request_instrument(self.config.instrument_id)
-
-        # self.request_instruments(
-        #     venue=IB_VENUE,
-        #     params={
-        #         "ib_contracts": (
-        #             {
-        #                 "secType": "CONTFUT",
-        #                 "exchange": "CME",
-        #                 "symbol": "ES",
-        #                 "build_futures_chain": True,
-        #                 "build_options_chain": True,
-        #                 "min_expiry_days": 10,
-        #                 "max_expiry_days": 11,
-        #             },
-        #         ),
-        #     },
-        # )
+        self.request_instruments(
+            venue=IB_VENUE,
+            params={
+                "ib_contracts": [
+                    {
+                        "secType": "IND",
+                        "symbol": "SPX",
+                        "exchange": "CBOE",
+                        "currency": "USD",
+                        "build_options_chain": True,
+                        "min_expiry_days": 0,
+                        "max_expiry_days": 5,
+                    },
+                ],
+            },
+        )
+        self.request_instruments(
+            venue=IB_VENUE,
+            params={
+                "ib_contracts": (
+                    {
+                        "secType": "CONTFUT",
+                        "exchange": "CME",
+                        "symbol": "ES",
+                        "build_futures_chain": True,
+                        "build_options_chain": True,
+                        "min_expiry_days": 10,
+                        "max_expiry_days": 11,
+                    },
+                ),
+            },
+        )
 
     def on_instrument(self, instrument):
         self.log.info(f"Instrument ID: {instrument.id}")
@@ -112,27 +128,27 @@ class DemoStrategy(Strategy):
         # self.subscribe_bars(self.config.bar_type, params={"start_ns":(utc_now - pd.Timedelta(minutes=2)).value})
 
         # Prepare values for order
-        last_price = self.instrument.make_price(46745)
-        tick_size = self.instrument.price_increment
-        profit_price = self.instrument.make_price(last_price + (10 * tick_size))
-        stoploss_price = self.instrument.make_price(last_price - (10 * tick_size))
-
-        # Create BUY MARKET order with PT and SL (both 10 ticks)
-        bracket_order_list = self.order_factory.bracket(
-            instrument_id=self.config.instrument_id,
-            order_side=OrderSide.BUY,
-            quantity=self.instrument.make_qty(1),  # Trade size: 1 contract
-            time_in_force=TimeInForce.GTC,
-            tp_price=profit_price,
-            sl_trigger_price=stoploss_price,
-            entry_post_only=False,
-            tp_post_only=False,
-        )
-
-        # Submit order and remember it
-        self.submit_order_list(bracket_order_list)
-        self.order_placed = True
-        self.log.info(f"Submitted bracket order: {bracket_order_list}", color=LogColor.GREEN)
+        # last_price = self.instrument.make_price(46745)
+        # tick_size = self.instrument.price_increment
+        # profit_price = self.instrument.make_price(last_price + (10 * tick_size))
+        # stoploss_price = self.instrument.make_price(last_price - (10 * tick_size))
+        #
+        # # Create BUY MARKET order with PT and SL (both 10 ticks)
+        # bracket_order_list = self.order_factory.bracket(
+        #     instrument_id=self.config.instrument_id,
+        #     order_side=OrderSide.BUY,
+        #     quantity=self.instrument.make_qty(1),  # Trade size: 1 contract
+        #     time_in_force=TimeInForce.GTC,
+        #     tp_price=profit_price,
+        #     sl_trigger_price=stoploss_price,
+        #     entry_post_only=False,
+        #     tp_post_only=False,
+        # )
+        #
+        # # Submit order and remember it
+        # self.submit_order_list(bracket_order_list)
+        # self.order_placed = True
+        # self.log.info(f"Submitted bracket order: {bracket_order_list}", color=LogColor.GREEN)
 
     def on_bar(self, bar: Bar):
         """
@@ -302,7 +318,7 @@ logging_config = LoggingConfig(log_level="INFO")
 config_node = TradingNodeConfig(
     trader_id="TESTER-001",
     logging=logging_config,
-    cache=cache_config,
+    # cache=cache_config,
     data_clients={IB: ib_data_client_config},
     exec_clients={IB: ib_exec_client_config},
     data_engine=data_engine_config,
