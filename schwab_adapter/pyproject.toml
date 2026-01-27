@@ -1,0 +1,18 @@
+[project]
+name = "nautilus-schwab"
+version = "0.1.0"
+description = "Schwab adapter for Nautilus Trader"
+authors = [{ name = "Gordan Trading Suite" }]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "nautilus_trader>=1.220.0",
+    "schwabdev>=3.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["nautilus_schwab*"]

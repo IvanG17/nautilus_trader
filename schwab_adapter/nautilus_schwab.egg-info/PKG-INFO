@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: nautilus-schwab
+Version: 0.1.0
+Summary: Schwab adapter for Nautilus Trader
+Author: Gordan Trading Suite
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: nautilus_trader>=1.220.0
+Requires-Dist: schwabdev>=3.0.0
