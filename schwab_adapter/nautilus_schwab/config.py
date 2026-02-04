@@ -57,6 +57,26 @@ class SchwabDataClientConfig(LiveDataClientConfig, frozen=True, kw_only=True):
     use_websocket : bool, default True
         If True, use WebSocket streaming for real-time data.
         If False, use polling (less efficient).
+    stream_health_check_interval : int, default 30
+        Interval in seconds between stream health checks.
+    stream_max_stale_time : int, default 120
+        Maximum seconds without data before triggering reconnection.
+    stream_max_reconnect_delay : int, default 60
+        Maximum delay in seconds for exponential backoff reconnection.
+    stream_circuit_breaker_threshold : int, default 5
+        Number of consecutive failures before circuit breaker opens.
+    stream_circuit_breaker_reset_time : int, default 300
+        Seconds to wait before retrying after circuit breaker opens.
+    stream_initial_data_timeout : int, default 30
+        Seconds to wait for initial data before warning.
+    http_max_retries : int, default 3
+        Maximum retries for HTTP requests.
+    http_retry_delay : float, default 1.0
+        Base delay in seconds between HTTP retries.
+    warmup_bars : int, default 0
+        Number of historical bars to load on subscription for strategy warm-up.
+        Set to 0 to disable warm-up (default). When enabled, historical bars are
+        fetched via REST API and pushed to the strategy before live streaming starts.
     instrument_provider : SchwabInstrumentProviderConfig, optional
         Configuration for the instrument provider.
 
@@ -67,6 +87,15 @@ class SchwabDataClientConfig(LiveDataClientConfig, frozen=True, kw_only=True):
     callback_url: str = "https://127.0.0.1"
     tokens_db: str = "~/.schwabdev/tokens.db"
     use_websocket: bool = True
+    stream_health_check_interval: int = 30
+    stream_max_stale_time: int = 120
+    stream_max_reconnect_delay: int = 60
+    stream_circuit_breaker_threshold: int = 5
+    stream_circuit_breaker_reset_time: int = 300
+    stream_initial_data_timeout: int = 30
+    http_max_retries: int = 3
+    http_retry_delay: float = 1.0
+    warmup_bars: int = 0
     instrument_provider: SchwabInstrumentProviderConfig = SchwabInstrumentProviderConfig()
 
     def __repr__(self) -> str:
@@ -77,7 +106,8 @@ class SchwabDataClientConfig(LiveDataClientConfig, frozen=True, kw_only=True):
             f"app_secret=********, "
             f"callback_url='{self.callback_url}', "
             f"tokens_db='{self.tokens_db}', "
-            f"use_websocket={self.use_websocket})"
+            f"use_websocket={self.use_websocket}, "
+            f"warmup_bars={self.warmup_bars})"
         )
 
     @staticmethod

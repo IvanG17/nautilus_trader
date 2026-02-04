@@ -27,13 +27,13 @@ SCHWAB_VENUE = Venue("SCHWAB")
 # Reference: https://developer.schwab.com/products/trader-api--individual/details/documentation/Market%20Data%20Production
 CHART_EQUITY_FIELDS = {
     "key": "symbol",
-    "1": "chart_time",  # Milliseconds since epoch
+    "1": "sequence",    # Sequence number
     "2": "open",
     "3": "high",
     "4": "low",
     "5": "close",
     "6": "volume",
-    "7": "sequence",
+    "7": "chart_time",  # Milliseconds since epoch
     "8": "chart_day",
 }
 

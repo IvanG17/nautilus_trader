@@ -36,9 +36,7 @@ Pyramiding:
 
 from __future__ import annotations
 
-from decimal import Decimal
-
-import pandas as pd
+import math
 
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.indicators import BollingerBands
@@ -49,7 +47,6 @@ from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.instruments import Instrument
-from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.trading.strategy import Strategy
 
@@ -80,6 +77,10 @@ class KineticTrendConfig(StrategyConfig, frozen=True):
         Position size as percentage of available cash (20%).
     profit_target_pct : float, default 0.10
         Profit target percentage (10%) for exits.
+    signal_mode_cash : float, default 0.0
+        Simulated cash balance for signal-only mode (no execution client).
+        Set to 0 to use real account balance. When > 0, enables signal mode
+        with this cash balance for position sizing.
 
     """
 
@@ -93,6 +94,7 @@ class KineticTrendConfig(StrategyConfig, frozen=True):
     pyramid_threshold: float = 0.02
     position_size_pct: float = 0.20
     profit_target_pct: float = 0.10
+    signal_mode_cash: float = 0.0
 
 
 class KineticTrendStrategy(Strategy):
@@ -132,6 +134,12 @@ class KineticTrendStrategy(Strategy):
         self.position_size_pct = config.position_size_pct
         self.profit_target_pct = config.profit_target_pct
 
+        # Signal-only mode (simulated cash for position sizing)
+        self.signal_mode_cash = config.signal_mode_cash
+        self._simulated_cash = config.signal_mode_cash
+        self._simulated_position = 0
+        self._warmup_complete = False
+
         # Indicators
         self.bollinger = BollingerBands(
             period=config.bb_period,
@@ -149,8 +157,23 @@ class KineticTrendStrategy(Strategy):
         self._entry_price: float = 0.0
         self._stop_loss_price: float = 0.0
 
+        # Cost basis tracking for pyramids
+        self._total_cost_basis: float = 0.0
+        self._total_quantity: int = 0
+        self._avg_entry_price: float = 0.0
+
         # Instrument reference (set on start)
         self._instrument: Instrument | None = None
+
+    def _is_valid_value(self, value) -> bool:
+        """Check if value is valid (not None, NaN, or Inf)."""
+        if value is None:
+            return False
+        try:
+            fval = float(value)
+            return not (math.isnan(fval) or math.isinf(fval))
+        except (TypeError, ValueError):
+            return False
 
     def on_start(self) -> None:
         """Called when the strategy starts."""
@@ -199,6 +222,28 @@ class KineticTrendStrategy(Strategy):
         if len(self._bars) < self._min_bars:
             return
 
+        # In signal mode, skip trading during warmup (historical bars)
+        if self.signal_mode_cash > 0 and not self._warmup_complete:
+            bar_time_ns = bar.ts_event
+            current_time_ns = self.clock.timestamp_ns()
+            time_diff_sec = abs(current_time_ns - bar_time_ns) / 1_000_000_000
+
+            if time_diff_sec < 600:  # Within 10 minutes = live bar
+                self._warmup_complete = True
+                self.log.info(
+                    f"WARMUP COMPLETE - Starting live trading. "
+                    f"Cash: ${self._simulated_cash:,.0f}"
+                )
+            else:
+                # Still in warmup - update prev_bb_pct but don't trade
+                price = float(bar.close)
+                upper = float(self.bollinger.upper)
+                lower = float(self.bollinger.lower)
+                bb_range = upper - lower
+                if bb_range > 0:
+                    self._prev_bb_pct = (price - lower) / bb_range
+                return
+
         # Calculate BB% (position within bands)
         price = float(bar.close)
         upper = float(self.bollinger.upper)
@@ -216,8 +261,11 @@ class KineticTrendStrategy(Strategy):
         # Calculate ATR
         current_atr = self._calculate_atr()
 
-        # Get current position
-        position = self.portfolio.net_position(self.instrument_id)
+        # Get current position (use simulated position in signal mode)
+        if self.signal_mode_cash > 0:
+            position = self._simulated_position
+        else:
+            position = self.portfolio.net_position(self.instrument_id)
 
         if position == 0:
             self._check_entry(bar, price, bb_pct, current_atr)
@@ -288,18 +336,40 @@ class KineticTrendStrategy(Strategy):
             self.log.warning("Insufficient funds for entry")
             return
 
-        # Calculate ATR-based stop loss (matches Gordan: price - 2*ATR)
-        stop_loss = price - (self.atr_stop_multiplier * current_atr)
+        # Calculate ATR-based stop loss with floor (matches Gordan: price - 2*ATR)
+        raw_stop = price - (self.atr_stop_multiplier * current_atr)
+        min_stop = price * 0.50  # Floor: at least 50% of entry price
+        stop_loss = max(raw_stop, min_stop, 0.01)
 
-        # Submit market buy order
-        order = self.order_factory.market(
-            instrument_id=self.instrument_id,
-            order_side=OrderSide.BUY,
-            quantity=Quantity.from_int(quantity),
-            time_in_force=TimeInForce.IOC,
-        )
+        # In signal mode, track simulated position; otherwise submit real order
+        if self.signal_mode_cash > 0:
+            # Signal mode: verify we can afford the position
+            actual_cost = quantity * price
+            if actual_cost > self._simulated_cash:
+                quantity = int(self._simulated_cash / price)
+                if quantity < 1:
+                    self.log.warning("Insufficient simulated cash for entry")
+                    return
+                actual_cost = quantity * price
 
-        self.submit_order(order)
+            self._simulated_position = quantity
+            self._simulated_cash -= actual_cost
+            self.log.info(
+                f">>> SIGNAL: BUY {quantity} shares @ ${price:.2f} "
+                f"(Stop: ${stop_loss:.2f}, ATR: ${current_atr:.2f})"
+            )
+        else:
+            order = self.order_factory.market(
+                instrument_id=self.instrument_id,
+                order_side=OrderSide.BUY,
+                quantity=Quantity.from_int(quantity),
+                time_in_force=TimeInForce.IOC,
+            )
+            self.submit_order(order)
+            self.log.info(
+                f"Entry order submitted: {quantity} shares @ ~${price:.2f}, "
+                f"Stop: ${stop_loss:.2f}, ATR: ${current_atr:.2f}"
+            )
 
         # Track entry state
         self._pyramid_level = 1
@@ -307,10 +377,10 @@ class KineticTrendStrategy(Strategy):
         self._entry_price = price
         self._stop_loss_price = stop_loss
 
-        self.log.info(
-            f"Entry order submitted: {quantity} shares @ ~${price:.2f}, "
-            f"Stop: ${stop_loss:.2f}, ATR: ${current_atr:.2f}"
-        )
+        # Initialize cost basis tracking
+        self._total_cost_basis = quantity * price
+        self._total_quantity = quantity
+        self._avg_entry_price = price
 
     def _check_exit_or_pyramid(
         self,
@@ -390,28 +460,49 @@ class KineticTrendStrategy(Strategy):
         if add_quantity < 1:
             return
 
-        # Submit add order
-        order = self.order_factory.market(
-            instrument_id=self.instrument_id,
-            order_side=OrderSide.BUY,
-            quantity=Quantity.from_int(add_quantity),
-            time_in_force=TimeInForce.IOC,
-        )
+        # In signal mode, track simulated position; otherwise submit real order
+        if self.signal_mode_cash > 0:
+            # Signal mode: verify we can afford the pyramid
+            actual_cost = add_quantity * price
+            if actual_cost > self._simulated_cash:
+                add_quantity = int(self._simulated_cash / price)
+                if add_quantity < 1:
+                    return
+                actual_cost = add_quantity * price
 
-        self.submit_order(order)
+            self._simulated_position += add_quantity
+            self._simulated_cash -= actual_cost
+            self.log.info(
+                f">>> SIGNAL: PYRAMID BUY +{add_quantity} shares @ ${price:.2f} "
+                f"(Level {self._pyramid_level + 1})"
+            )
+        else:
+            order = self.order_factory.market(
+                instrument_id=self.instrument_id,
+                order_side=OrderSide.BUY,
+                quantity=Quantity.from_int(add_quantity),
+                time_in_force=TimeInForce.IOC,
+            )
+            self.submit_order(order)
+            self.log.info(
+                f"Pyramid add #{self._pyramid_level + 1}: {add_quantity} shares @ ~${price:.2f}"
+            )
+
+        # Update cost basis tracking
+        self._total_cost_basis += add_quantity * price
+        self._total_quantity += add_quantity
+        self._avg_entry_price = self._total_cost_basis / self._total_quantity
 
         # Update tracking
         self._pyramid_level += 1
         self._last_add_price = price
 
-        # Update stop loss based on new ATR (trail up only)
-        new_stop = price - (self.atr_stop_multiplier * current_atr)
+        # Update stop loss based on new ATR (trail up only, with floor)
+        raw_stop = price - (self.atr_stop_multiplier * current_atr)
+        min_stop = self._avg_entry_price * 0.50 if self._avg_entry_price > 0 else 0.01
+        new_stop = max(raw_stop, min_stop, 0.01)
         if new_stop > self._stop_loss_price:
             self._stop_loss_price = new_stop
-
-        self.log.info(
-            f"Pyramid add #{self._pyramid_level}: {add_quantity} shares @ ~${price:.2f}"
-        )
 
     def _exit_position(self, price: float, reason: str, pnl_pct: float) -> None:
         """
@@ -427,31 +518,48 @@ class KineticTrendStrategy(Strategy):
             The P&L percentage.
 
         """
-        position = self.portfolio.net_position(self.instrument_id)
+        # Get position (use simulated in signal mode)
+        if self.signal_mode_cash > 0:
+            position = self._simulated_position
+        else:
+            position = self.portfolio.net_position(self.instrument_id)
 
         if position <= 0:
             return
 
-        # Submit market sell order
-        order = self.order_factory.market(
-            instrument_id=self.instrument_id,
-            order_side=OrderSide.SELL,
-            quantity=Quantity.from_int(int(abs(position))),
-            time_in_force=TimeInForce.IOC,
-        )
+        # Use avg entry price for accurate P&L calculation
+        entry_for_pnl = self._avg_entry_price if self._avg_entry_price > 0 else self._entry_price
+        pnl_dollars = (price - entry_for_pnl) * int(abs(position))
 
-        self.submit_order(order)
-
-        self.log.info(
-            f"Exit ({reason}): {int(position)} shares @ ~${price:.2f}, "
-            f"P&L: {pnl_pct * 100:+.1f}%"
-        )
+        # In signal mode, track simulated position; otherwise submit real order
+        if self.signal_mode_cash > 0:
+            self._simulated_cash += int(abs(position)) * price
+            self._simulated_position = 0
+            self.log.info(
+                f">>> SIGNAL: SELL {int(position)} shares @ ${price:.2f} "
+                f"(Reason: {reason}, P&L: {pnl_pct * 100:+.1f}% / ${pnl_dollars:+.2f})"
+            )
+        else:
+            order = self.order_factory.market(
+                instrument_id=self.instrument_id,
+                order_side=OrderSide.SELL,
+                quantity=Quantity.from_int(int(abs(position))),
+                time_in_force=TimeInForce.IOC,
+            )
+            self.submit_order(order)
+            self.log.info(
+                f"Exit ({reason}): {int(position)} shares @ ~${price:.2f}, "
+                f"P&L: {pnl_pct * 100:+.1f}%"
+            )
 
         # Reset state
         self._pyramid_level = 0
         self._last_add_price = 0.0
         self._entry_price = 0.0
         self._stop_loss_price = 0.0
+        self._total_cost_basis = 0.0
+        self._total_quantity = 0
+        self._avg_entry_price = 0.0
 
     def _calculate_position_size(self, price: float) -> int:
         """
@@ -471,17 +579,23 @@ class KineticTrendStrategy(Strategy):
         if self._instrument is None:
             return 0
 
-        # Get available cash
-        account = self.portfolio.account(self._instrument.id.venue)
-        if account is None:
-            return 0
+        cash = 0.0
 
-        # Get balance in quote currency (USD for equities)
-        balance = account.balance_total(self._instrument.quote_currency)
-        if balance is None:
-            return 0
+        # Check for signal mode (simulated cash)
+        if self.signal_mode_cash > 0:
+            cash = self._simulated_cash
+        else:
+            # Get available cash from real account
+            account = self.portfolio.account(self._instrument.id.venue)
+            if account is None:
+                return 0
 
-        cash = float(balance.as_double())
+            # Get balance in quote currency (USD for equities)
+            balance = account.balance_total(self._instrument.quote_currency)
+            if balance is None:
+                return 0
+
+            cash = float(balance.as_double())
 
         # Calculate position value
         position_value = cash * self.position_size_pct
@@ -491,6 +605,13 @@ class KineticTrendStrategy(Strategy):
             shares = int(position_value / price)
         else:
             shares = 0
+
+        # Final validation: ensure total cost doesn't exceed available cash
+        if shares > 0:
+            total_cost = shares * price
+            if total_cost > cash:
+                shares = int(cash / price)
+                self.log.warning(f"Adjusted position to {shares} due to cash constraint")
 
         return max(0, shares)
 
@@ -531,3 +652,8 @@ class KineticTrendStrategy(Strategy):
         self._prev_bb_pct = 0.5
         self._entry_price = 0.0
         self._stop_loss_price = 0.0
+
+        # Reset cost basis tracking
+        self._total_cost_basis = 0.0
+        self._total_quantity = 0
+        self._avg_entry_price = 0.0

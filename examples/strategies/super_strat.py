@@ -37,7 +37,7 @@ Pyramiding Logic:
 
 from __future__ import annotations
 
-from decimal import Decimal
+import math
 
 import numpy as np
 import pandas as pd
@@ -82,6 +82,10 @@ class SuperStratConfig(StrategyConfig, frozen=True):
         ATR profit threshold to trigger pyramid add.
     pyramid_size_pct : float, default 0.5
         Pyramid add size as percentage of original position (50%).
+    signal_mode_cash : float, default 0.0
+        Simulated cash balance for signal-only mode (no execution client).
+        Set to 0 to use real account balance. When > 0, enables signal mode
+        with this cash balance for position sizing.
 
     """
 
@@ -96,6 +100,7 @@ class SuperStratConfig(StrategyConfig, frozen=True):
     donchian_period: int = 20
     pyramid_atr_threshold: float = 1.5
     pyramid_size_pct: float = 0.5
+    signal_mode_cash: float = 0.0
 
 
 class SuperStratStrategy(Strategy):
@@ -140,6 +145,12 @@ class SuperStratStrategy(Strategy):
         self.pyramid_atr_threshold = config.pyramid_atr_threshold
         self.pyramid_size_pct = config.pyramid_size_pct
 
+        # Signal-only mode (simulated cash for position sizing)
+        self.signal_mode_cash = config.signal_mode_cash
+        self._simulated_cash = config.signal_mode_cash  # Track remaining cash in signal mode
+        self._simulated_position = 0  # Track simulated position in signal mode
+        self._warmup_complete = False  # Flag to skip trading during warmup
+
         # Minimum bars needed for indicators
         self._min_bars = max(self.atr_period, self.vsa_window, self.donchian_period) + 10
 
@@ -154,25 +165,34 @@ class SuperStratStrategy(Strategy):
         self._original_quantity: int = 0
         self._breakeven_stop: float = 0.0
 
+        # Average cost basis tracking for pyramids
+        self._total_cost_basis: float = 0.0
+        self._total_quantity: int = 0
+        self._avg_entry_price: float = 0.0
+
         # Instrument reference (set on start)
         self._instrument: Instrument | None = None
+
+    def _is_valid_value(self, value) -> bool:
+        """Check if value is valid (not None, NaN, or Inf)."""
+        if value is None:
+            return False
+        try:
+            fval = float(value)
+            return not (math.isnan(fval) or math.isinf(fval))
+        except (TypeError, ValueError):
+            return False
 
     def on_start(self) -> None:
         """Called when the strategy starts."""
         self.log.info("Starting SuperStrat strategy")
 
-        # Get instrument from cache
-        self._instrument = self.cache.instrument(self.instrument_id)
-
-        if self._instrument is None:
-            self.log.error(f"Instrument not found: {self.instrument_id}")
-            return
-
-        # Subscribe to bar data
+        # Subscribe to bar data first - this triggers instrument loading
         self.subscribe_bars(self.bar_type)
 
         self.log.info(
-            f"Initialized: ATR({self.atr_period}, x{self.atr_multiplier}), "
+            f"Subscribed to {self.bar_type}, waiting for instrument load. "
+            f"ATR({self.atr_period}, x{self.atr_multiplier}), "
             f"VSA({self.vsa_window}), Donchian({self.donchian_period}), "
             f"TrailingStop({self.trailing_stop_atr_mult}x ATR), "
             f"Pyramid(+{self.pyramid_atr_threshold}ATR, {self.pyramid_size_pct*100:.0f}%)"
@@ -188,6 +208,14 @@ class SuperStratStrategy(Strategy):
             The new bar.
 
         """
+        # Get instrument from cache on first bar (after subscription loads it)
+        if self._instrument is None:
+            self._instrument = self.cache.instrument(self.instrument_id)
+            if self._instrument is None:
+                self.log.warning(f"Instrument still not available: {self.instrument_id}")
+                return
+            self.log.info(f"Instrument loaded: {self._instrument.id}")
+
         # Store bar for indicator calculations
         self._bars.append(bar)
 
@@ -195,9 +223,34 @@ class SuperStratStrategy(Strategy):
         if len(self._bars) > self._min_bars + 50:
             self._bars = self._bars[-(self._min_bars + 50):]
 
+        # Log progress every 5 bars
+        if len(self._bars) % 5 == 0 or len(self._bars) == self._min_bars:
+            self.log.info(
+                f"Bar {len(self._bars)}/{self._min_bars} | "
+                f"Close: {float(bar.close):.2f} | "
+                f"Volume: {int(bar.volume)}"
+            )
+
         # Check we have enough data
         if len(self._bars) < self._min_bars:
             return
+
+        # In signal mode, skip trading during warmup (historical bars)
+        # Detect warmup complete when bar timestamp is within 10 minutes of current time
+        if self.signal_mode_cash > 0 and not self._warmup_complete:
+            bar_time_ns = bar.ts_event
+            current_time_ns = self.clock.timestamp_ns()
+            time_diff_sec = abs(current_time_ns - bar_time_ns) / 1_000_000_000
+
+            if time_diff_sec < 600:  # Within 10 minutes = live bar
+                self._warmup_complete = True
+                self.log.info(
+                    f"WARMUP COMPLETE - Starting live trading. "
+                    f"Cash: ${self._simulated_cash:,.0f}"
+                )
+            else:
+                # Still in warmup - calculate indicators but don't trade
+                return
 
         # Build DataFrame for indicators
         df = self._bars_to_dataframe()
@@ -210,13 +263,28 @@ class SuperStratStrategy(Strategy):
 
         # Current values
         price = float(bar.close)
-        current_atr = float(atr.iloc[-1]) if len(atr) > 0 else price * 0.02
-        is_uptrend = int(direction.iloc[-1]) == 1 if len(direction) > 0 else False
+        current_atr = float(atr.iloc[-1]) if len(atr) > 0 and self._is_valid_value(atr.iloc[-1]) else price * 0.02
+        is_uptrend = int(direction.iloc[-1]) == 1 if len(direction) > 0 and self._is_valid_value(direction.iloc[-1]) else False
         is_selling_climax = bool(vsa["selling_climax"].iloc[-1]) if len(vsa["selling_climax"]) > 0 else False
-        current_donchian_high = float(donchian_high.iloc[-2]) if len(donchian_high) > 1 else 0.0  # Use previous bar's high
+        # Donchian high is already shifted, use iloc[-1] with NaN check
+        current_donchian_high = 0.0
+        if len(donchian_high) > 0 and self._is_valid_value(donchian_high.iloc[-1]):
+            current_donchian_high = float(donchian_high.iloc[-1])
 
-        # Get current position
-        position = self.portfolio.net_position(self.instrument_id)
+        # Get current position (use simulated position in signal mode)
+        if self.signal_mode_cash > 0:
+            position = self._simulated_position
+        else:
+            position = self.portfolio.net_position(self.instrument_id)
+
+        # Log analysis every bar once we have enough data
+        trend_str = "UP" if is_uptrend else "DOWN"
+        climax_str = "CLIMAX" if is_selling_climax else "normal"
+        self.log.info(
+            f"ANALYSIS | Price: {price:.2f} | ATR: {current_atr:.3f} | "
+            f"Trend: {trend_str} | VSA: {climax_str} | "
+            f"Donchian: {current_donchian_high:.2f} | Pos: {position}"
+        )
 
         if position == 0:
             self._check_entry(bar, price, current_atr, is_uptrend, is_selling_climax, current_donchian_high)
@@ -328,8 +396,8 @@ class SuperStratStrategy(Strategy):
         }
 
     def _calculate_donchian_high(self, df: pd.DataFrame) -> pd.Series:
-        """Calculate rolling N-period high (Donchian upper channel)."""
-        return df["high"].rolling(window=self.donchian_period).max()
+        """Calculate rolling N-period high (Donchian upper channel), shifted to exclude current bar."""
+        return df["high"].rolling(window=self.donchian_period).max().shift(1)
 
     def _check_entry(
         self,
@@ -376,15 +444,37 @@ class SuperStratStrategy(Strategy):
             self.log.warning("Insufficient funds for entry")
             return
 
-        # Submit market buy order
-        order = self.order_factory.market(
-            instrument_id=self.instrument_id,
-            order_side=OrderSide.BUY,
-            quantity=Quantity.from_int(quantity),
-            time_in_force=TimeInForce.IOC,
-        )
+        # In signal mode, track simulated position; otherwise submit real order
+        if self.signal_mode_cash > 0:
+            # Signal mode: verify we can afford the position
+            actual_cost = quantity * price
+            if actual_cost > self._simulated_cash:
+                quantity = int(self._simulated_cash / price)
+                if quantity < 1:
+                    self.log.warning("Insufficient simulated cash for entry")
+                    return
+                actual_cost = quantity * price
 
-        self.submit_order(order)
+            # Signal mode: simulate the trade
+            self._simulated_position = quantity
+            self._simulated_cash -= actual_cost
+            self.log.info(
+                f">>> SIGNAL: BUY {quantity} shares @ ${price:.2f} "
+                f"(Reason: {entry_reason}, ATR: ${current_atr:.2f})"
+            )
+        else:
+            # Real mode: submit market order
+            order = self.order_factory.market(
+                instrument_id=self.instrument_id,
+                order_side=OrderSide.BUY,
+                quantity=Quantity.from_int(quantity),
+                time_in_force=TimeInForce.IOC,
+            )
+            self.submit_order(order)
+            self.log.info(
+                f"Entry ({entry_reason}): {quantity} shares @ ~${price:.2f}, "
+                f"ATR: ${current_atr:.2f}"
+            )
 
         # Track entry state
         self._entry_price = price
@@ -396,10 +486,10 @@ class SuperStratStrategy(Strategy):
         self._pyramid_added = False
         self._breakeven_stop = 0.0
 
-        self.log.info(
-            f"Entry ({entry_reason}): {quantity} shares @ ~${price:.2f}, "
-            f"ATR: ${current_atr:.2f}"
-        )
+        # Initialize cost basis tracking
+        self._total_cost_basis = quantity * price
+        self._total_quantity = quantity
+        self._avg_entry_price = price
 
     def _check_pyramid(self, price: float, current_atr: float) -> None:
         """
@@ -429,27 +519,40 @@ class SuperStratStrategy(Strategy):
         if add_quantity < 1:
             return
 
-        # Submit pyramid order
-        order = self.order_factory.market(
-            instrument_id=self.instrument_id,
-            order_side=OrderSide.BUY,
-            quantity=Quantity.from_int(add_quantity),
-            time_in_force=TimeInForce.IOC,
-        )
-
-        self.submit_order(order)
-
-        # Move original stop to break-even
-        self._breakeven_stop = self._original_entry_price
-        self._pyramid_added = True
-
         profit_pct = (price - self._original_entry_price) / self._original_entry_price * 100
 
-        self.log.info(
-            f"Pyramid ADD: +{add_quantity} shares @ ~${price:.2f} "
-            f"(+{profit_pct:.1f}%, +{profit/current_atr:.1f}ATR), "
-            f"BE stop @ ${self._breakeven_stop:.2f}"
-        )
+        # In signal mode, track simulated position; otherwise submit real order
+        if self.signal_mode_cash > 0:
+            # Signal mode: simulate the pyramid
+            self._simulated_position += add_quantity
+            self._simulated_cash -= add_quantity * price
+            self.log.info(
+                f">>> SIGNAL: PYRAMID BUY +{add_quantity} shares @ ${price:.2f} "
+                f"(+{profit_pct:.1f}%, +{profit/current_atr:.1f}ATR)"
+            )
+        else:
+            # Real mode: submit market order
+            order = self.order_factory.market(
+                instrument_id=self.instrument_id,
+                order_side=OrderSide.BUY,
+                quantity=Quantity.from_int(add_quantity),
+                time_in_force=TimeInForce.IOC,
+            )
+            self.submit_order(order)
+            self.log.info(
+                f"Pyramid ADD: +{add_quantity} shares @ ~${price:.2f} "
+                f"(+{profit_pct:.1f}%, +{profit/current_atr:.1f}ATR), "
+                f"BE stop @ ${self._breakeven_stop:.2f}"
+            )
+
+        # Update cost basis tracking
+        self._total_cost_basis += add_quantity * price
+        self._total_quantity += add_quantity
+        self._avg_entry_price = self._total_cost_basis / self._total_quantity
+
+        # Move original stop to break-even (use average entry for fairness)
+        self._breakeven_stop = self._avg_entry_price
+        self._pyramid_added = True
 
     def _check_exit(
         self,
@@ -471,14 +574,16 @@ class SuperStratStrategy(Strategy):
         if price > self._highest_price:
             self._highest_price = price
 
-        # Calculate trailing stop
-        trailing_stop = self._highest_price - (self.trailing_stop_atr_mult * current_atr)
+        # Calculate trailing stop with floor (never below 50% of entry, never zero/negative)
+        raw_stop = self._highest_price - (self.trailing_stop_atr_mult * current_atr)
+        min_stop = self._avg_entry_price * 0.50 if self._avg_entry_price > 0 else 0.01
+        trailing_stop = max(raw_stop, min_stop, 0.01)
 
         # Check exit conditions
         should_exit = False
         exit_reason = ""
 
-        # Check break-even stop first (if pyramid is active)
+        # Check break-even stop first (if pyramid is active, use avg entry)
         if self._breakeven_stop > 0 and price <= self._breakeven_stop:
             should_exit = True
             exit_reason = "breakeven_stop"
@@ -492,27 +597,39 @@ class SuperStratStrategy(Strategy):
         if not should_exit:
             return
 
-        # Calculate P&L
-        if self._entry_price > 0:
-            pnl_pct = (price - self._entry_price) / self._entry_price
+        # Calculate P&L using average entry price for accuracy
+        entry_for_pnl = self._avg_entry_price if self._avg_entry_price > 0 else self._entry_price
+        if entry_for_pnl > 0:
+            pnl_pct = (price - entry_for_pnl) / entry_for_pnl
+            pnl_dollars = (price - entry_for_pnl) * int(abs(position))
         else:
             pnl_pct = 0.0
-
-        # Submit market sell order
-        order = self.order_factory.market(
-            instrument_id=self.instrument_id,
-            order_side=OrderSide.SELL,
-            quantity=Quantity.from_int(int(abs(position))),
-            time_in_force=TimeInForce.IOC,
-        )
-
-        self.submit_order(order)
+            pnl_dollars = 0.0
 
         pyramid_info = " (pyramided)" if self._pyramid_added else ""
-        self.log.info(
-            f"Exit ({exit_reason}){pyramid_info}: {int(position)} shares @ ~${price:.2f}, "
-            f"P&L: {pnl_pct * 100:+.1f}%"
-        )
+
+        # In signal mode, track simulated position; otherwise submit real order
+        if self.signal_mode_cash > 0:
+            # Signal mode: simulate the exit
+            self._simulated_cash += int(abs(position)) * price
+            self._simulated_position = 0
+            self.log.info(
+                f">>> SIGNAL: SELL {int(position)} shares @ ${price:.2f} "
+                f"(Reason: {exit_reason}{pyramid_info}, P&L: {pnl_pct * 100:+.1f}% / ${pnl_dollars:+.2f})"
+            )
+        else:
+            # Real mode: submit market order
+            order = self.order_factory.market(
+                instrument_id=self.instrument_id,
+                order_side=OrderSide.SELL,
+                quantity=Quantity.from_int(int(abs(position))),
+                time_in_force=TimeInForce.IOC,
+            )
+            self.submit_order(order)
+            self.log.info(
+                f"Exit ({exit_reason}){pyramid_info}: {int(position)} shares @ ~${price:.2f}, "
+                f"P&L: {pnl_pct * 100:+.1f}%"
+            )
 
         # Reset state
         self._entry_price = 0.0
@@ -521,6 +638,9 @@ class SuperStratStrategy(Strategy):
         self._original_quantity = 0
         self._pyramid_added = False
         self._breakeven_stop = 0.0
+        self._total_cost_basis = 0.0
+        self._total_quantity = 0
+        self._avg_entry_price = 0.0
 
     def _calculate_position_size(self, price: float) -> int:
         """
@@ -540,17 +660,23 @@ class SuperStratStrategy(Strategy):
         if self._instrument is None:
             return 0
 
-        # Get available cash
-        account = self.portfolio.account(self._instrument.id.venue)
-        if account is None:
-            return 0
+        cash = 0.0
 
-        # Get balance in quote currency (USD for equities)
-        balance = account.balance_total(self._instrument.quote_currency)
-        if balance is None:
-            return 0
+        # Check for signal mode (simulated cash)
+        if self.signal_mode_cash > 0:
+            cash = self._simulated_cash
+        else:
+            # Get available cash from real account
+            account = self.portfolio.account(self._instrument.id.venue)
+            if account is None:
+                return 0
 
-        cash = float(balance.as_double())
+            # Get balance in quote currency (USD for equities)
+            balance = account.balance_total(self._instrument.quote_currency)
+            if balance is None:
+                return 0
+
+            cash = float(balance.as_double())
 
         # Calculate position value
         position_value = cash * self.position_size_pct
@@ -560,6 +686,13 @@ class SuperStratStrategy(Strategy):
             shares = int(position_value / price)
         else:
             shares = 0
+
+        # Final validation: ensure total cost doesn't exceed available cash
+        if shares > 0:
+            total_cost = shares * price
+            if total_cost > cash:
+                shares = int(cash / price)
+                self.log.warning(f"Adjusted position to {shares} due to cash constraint")
 
         return max(0, shares)
 
@@ -598,3 +731,8 @@ class SuperStratStrategy(Strategy):
         self._original_entry_price = 0.0
         self._original_quantity = 0
         self._breakeven_stop = 0.0
+
+        # Reset cost basis tracking
+        self._total_cost_basis = 0.0
+        self._total_quantity = 0
+        self._avg_entry_price = 0.0

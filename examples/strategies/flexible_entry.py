@@ -30,7 +30,7 @@ This is a port of the Gordan trading suite's FlexibleEntryStrategy.
 
 from __future__ import annotations
 
-from decimal import Decimal
+import math
 
 import numpy as np
 import pandas as pd
@@ -69,6 +69,10 @@ class FlexibleEntryConfig(StrategyConfig, frozen=True):
         ATR multiplier for trailing stop distance.
     position_size_pct : float, default 0.25
         Position size as percentage of available cash (25%).
+    signal_mode_cash : float, default 0.0
+        Simulated cash balance for signal-only mode (no execution client).
+        Set to 0 to use real account balance. When > 0, enables signal mode
+        with this cash balance for position sizing.
 
     """
 
@@ -80,6 +84,7 @@ class FlexibleEntryConfig(StrategyConfig, frozen=True):
     vsa_volume_factor: float = 1.5
     trailing_stop_atr_mult: float = 2.0
     position_size_pct: float = 0.25
+    signal_mode_cash: float = 0.0
 
 
 class FlexibleEntryStrategy(Strategy):
@@ -114,6 +119,12 @@ class FlexibleEntryStrategy(Strategy):
         self.trailing_stop_atr_mult = config.trailing_stop_atr_mult
         self.position_size_pct = config.position_size_pct
 
+        # Signal-only mode (simulated cash for position sizing)
+        self.signal_mode_cash = config.signal_mode_cash
+        self._simulated_cash = config.signal_mode_cash
+        self._simulated_position = 0
+        self._warmup_complete = False
+
         # Minimum bars needed for indicators
         self._min_bars = max(self.atr_period, self.vsa_window) + 10
 
@@ -124,6 +135,16 @@ class FlexibleEntryStrategy(Strategy):
 
         # Instrument reference (set on start)
         self._instrument: Instrument | None = None
+
+    def _is_valid_value(self, value) -> bool:
+        """Check if value is valid (not None, NaN, or Inf)."""
+        if value is None:
+            return False
+        try:
+            fval = float(value)
+            return not (math.isnan(fval) or math.isinf(fval))
+        except (TypeError, ValueError):
+            return False
 
     def on_start(self) -> None:
         """Called when the strategy starts."""
@@ -165,6 +186,22 @@ class FlexibleEntryStrategy(Strategy):
         if len(self._bars) < self._min_bars:
             return
 
+        # In signal mode, skip trading during warmup (historical bars)
+        if self.signal_mode_cash > 0 and not self._warmup_complete:
+            bar_time_ns = bar.ts_event
+            current_time_ns = self.clock.timestamp_ns()
+            time_diff_sec = abs(current_time_ns - bar_time_ns) / 1_000_000_000
+
+            if time_diff_sec < 600:  # Within 10 minutes = live bar
+                self._warmup_complete = True
+                self.log.info(
+                    f"WARMUP COMPLETE - Starting live trading. "
+                    f"Cash: ${self._simulated_cash:,.0f}"
+                )
+            else:
+                # Still in warmup - calculate indicators but don't trade
+                return
+
         # Build DataFrame for indicators
         df = self._bars_to_dataframe()
 
@@ -175,12 +212,15 @@ class FlexibleEntryStrategy(Strategy):
 
         # Current values
         price = float(bar.close)
-        current_atr = float(atr.iloc[-1]) if len(atr) > 0 else price * 0.02
-        is_uptrend = int(direction.iloc[-1]) == 1 if len(direction) > 0 else False
+        current_atr = float(atr.iloc[-1]) if len(atr) > 0 and self._is_valid_value(atr.iloc[-1]) else price * 0.02
+        is_uptrend = int(direction.iloc[-1]) == 1 if len(direction) > 0 and self._is_valid_value(direction.iloc[-1]) else False
         is_selling_climax = bool(vsa["selling_climax"].iloc[-1]) if len(vsa["selling_climax"]) > 0 else False
 
-        # Get current position
-        position = self.portfolio.net_position(self.instrument_id)
+        # Get current position (use simulated position in signal mode)
+        if self.signal_mode_cash > 0:
+            position = self._simulated_position
+        else:
+            position = self.portfolio.net_position(self.instrument_id)
 
         if position == 0:
             self._check_entry(bar, price, current_atr, is_uptrend, is_selling_climax)
@@ -316,24 +356,39 @@ class FlexibleEntryStrategy(Strategy):
             self.log.warning("Insufficient funds for entry")
             return
 
-        # Submit market buy order
-        order = self.order_factory.market(
-            instrument_id=self.instrument_id,
-            order_side=OrderSide.BUY,
-            quantity=Quantity.from_int(quantity),
-            time_in_force=TimeInForce.IOC,
-        )
+        # In signal mode, track simulated position; otherwise submit real order
+        if self.signal_mode_cash > 0:
+            # Signal mode: verify we can afford the position
+            actual_cost = quantity * price
+            if actual_cost > self._simulated_cash:
+                quantity = int(self._simulated_cash / price)
+                if quantity < 1:
+                    self.log.warning("Insufficient simulated cash for entry")
+                    return
+                actual_cost = quantity * price
 
-        self.submit_order(order)
+            self._simulated_position = quantity
+            self._simulated_cash -= actual_cost
+            self.log.info(
+                f">>> SIGNAL: BUY {quantity} shares @ ${price:.2f} "
+                f"(ATR: ${current_atr:.2f})"
+            )
+        else:
+            order = self.order_factory.market(
+                instrument_id=self.instrument_id,
+                order_side=OrderSide.BUY,
+                quantity=Quantity.from_int(quantity),
+                time_in_force=TimeInForce.IOC,
+            )
+            self.submit_order(order)
+            self.log.info(
+                f"Entry order submitted: {quantity} shares @ ~${price:.2f}, "
+                f"ATR: ${current_atr:.2f}"
+            )
 
         # Track entry state
         self._entry_price = price
         self._highest_price = price
-
-        self.log.info(
-            f"Entry order submitted: {quantity} shares @ ~${price:.2f}, "
-            f"ATR: ${current_atr:.2f}"
-        )
 
     def _check_exit(
         self,
@@ -354,8 +409,10 @@ class FlexibleEntryStrategy(Strategy):
         if price > self._highest_price:
             self._highest_price = price
 
-        # Calculate trailing stop
-        trailing_stop = self._highest_price - (self.trailing_stop_atr_mult * current_atr)
+        # Calculate trailing stop with floor (never below 50% of entry, never zero/negative)
+        raw_stop = self._highest_price - (self.trailing_stop_atr_mult * current_atr)
+        min_stop = self._entry_price * 0.50 if self._entry_price > 0 else 0.01
+        trailing_stop = max(raw_stop, min_stop, 0.01)
 
         # Check exit conditions
         should_exit = False
@@ -374,23 +431,31 @@ class FlexibleEntryStrategy(Strategy):
         # Calculate P&L
         if self._entry_price > 0:
             pnl_pct = (price - self._entry_price) / self._entry_price
+            pnl_dollars = (price - self._entry_price) * int(abs(position))
         else:
             pnl_pct = 0.0
+            pnl_dollars = 0.0
 
-        # Submit market sell order
-        order = self.order_factory.market(
-            instrument_id=self.instrument_id,
-            order_side=OrderSide.SELL,
-            quantity=Quantity.from_int(int(abs(position))),
-            time_in_force=TimeInForce.IOC,
-        )
-
-        self.submit_order(order)
-
-        self.log.info(
-            f"Exit ({exit_reason}): {int(position)} shares @ ~${price:.2f}, "
-            f"P&L: {pnl_pct * 100:+.1f}%"
-        )
+        # In signal mode, track simulated position; otherwise submit real order
+        if self.signal_mode_cash > 0:
+            self._simulated_cash += int(abs(position)) * price
+            self._simulated_position = 0
+            self.log.info(
+                f">>> SIGNAL: SELL {int(position)} shares @ ${price:.2f} "
+                f"(Reason: {exit_reason}, P&L: {pnl_pct * 100:+.1f}% / ${pnl_dollars:+.2f})"
+            )
+        else:
+            order = self.order_factory.market(
+                instrument_id=self.instrument_id,
+                order_side=OrderSide.SELL,
+                quantity=Quantity.from_int(int(abs(position))),
+                time_in_force=TimeInForce.IOC,
+            )
+            self.submit_order(order)
+            self.log.info(
+                f"Exit ({exit_reason}): {int(position)} shares @ ~${price:.2f}, "
+                f"P&L: {pnl_pct * 100:+.1f}%"
+            )
 
         # Reset state
         self._entry_price = 0.0
@@ -414,17 +479,23 @@ class FlexibleEntryStrategy(Strategy):
         if self._instrument is None:
             return 0
 
-        # Get available cash
-        account = self.portfolio.account(self._instrument.id.venue)
-        if account is None:
-            return 0
+        cash = 0.0
 
-        # Get balance in quote currency (USD for equities)
-        balance = account.balance_total(self._instrument.quote_currency)
-        if balance is None:
-            return 0
+        # Check for signal mode (simulated cash)
+        if self.signal_mode_cash > 0:
+            cash = self._simulated_cash
+        else:
+            # Get available cash from real account
+            account = self.portfolio.account(self._instrument.id.venue)
+            if account is None:
+                return 0
 
-        cash = float(balance.as_double())
+            # Get balance in quote currency (USD for equities)
+            balance = account.balance_total(self._instrument.quote_currency)
+            if balance is None:
+                return 0
+
+            cash = float(balance.as_double())
 
         # Calculate position value
         position_value = cash * self.position_size_pct
@@ -434,6 +505,13 @@ class FlexibleEntryStrategy(Strategy):
             shares = int(position_value / price)
         else:
             shares = 0
+
+        # Final validation: ensure total cost doesn't exceed available cash
+        if shares > 0:
+            total_cost = shares * price
+            if total_cost > cash:
+                shares = int(cash / price)
+                self.log.warning(f"Adjusted position to {shares} due to cash constraint")
 
         return max(0, shares)
 
