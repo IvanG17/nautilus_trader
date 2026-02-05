@@ -22,9 +22,11 @@ import json
 import logging
 import threading
 import time
+from datetime import datetime
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 from nautilus_schwab.common import SCHWAB_TIMEFRAMES
 from nautilus_schwab.common import SCHWAB_VENUE
@@ -54,6 +56,128 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+_EASTERN = ZoneInfo("America/New_York")
+
+
+def _bar_spec_to_interval_minutes(bar_type: BarType) -> int:
+    """Return aggregation interval in minutes for a BarType (1440 = daily sentinel)."""
+    spec = bar_type.spec
+    if spec.aggregation == BarAggregation.MINUTE:
+        return spec.step
+    elif spec.aggregation == BarAggregation.HOUR:
+        return spec.step * 60
+    elif spec.aggregation == BarAggregation.DAY:
+        return 1440
+    return 1
+
+
+class BarAccumulator:
+    """
+    Accumulates 1-minute bars into higher-timeframe bars using time-aligned buckets.
+
+    Bucket computation (intraday): floor(minutes_since_midnight / interval)
+    Daily: emits when the trading date changes.
+
+    Thread safety: update() should only be called from a single thread (the stream thread).
+    """
+
+    def __init__(self, bar_type: BarType, interval_minutes: int) -> None:
+        self._bar_type = bar_type
+        self._interval = interval_minutes
+        self._is_daily = interval_minutes >= 1440
+
+        # Accumulation state
+        self._open: Price | None = None
+        self._high: Price | None = None
+        self._low: Price | None = None
+        self._close: Price | None = None
+        self._volume: int = 0
+        self._ts_event: int = 0
+        self._ts_init: int = 0
+        self._current_bucket: int | None = None
+        self._bar_count: int = 0
+
+    def _bucket_for_ts(self, ts_event_ns: int) -> int:
+        """Compute the bucket index for a timestamp (nanoseconds since epoch)."""
+        if self._is_daily:
+            dt = datetime.fromtimestamp(ts_event_ns / 1_000_000_000, tz=_EASTERN)
+            return dt.toordinal()
+        else:
+            dt = datetime.fromtimestamp(ts_event_ns / 1_000_000_000, tz=_EASTERN)
+            minutes_since_midnight = dt.hour * 60 + dt.minute
+            return minutes_since_midnight // self._interval
+
+    def update(
+        self,
+        open_price: Price,
+        high_price: Price,
+        low_price: Price,
+        close_price: Price,
+        volume: int,
+        ts_event: int,
+        ts_init: int,
+    ) -> Bar | None:
+        """
+        Feed a 1-minute bar's data. Returns a completed aggregated bar when
+        a bucket boundary is crossed, else None.
+        """
+        bucket = self._bucket_for_ts(ts_event)
+        completed: Bar | None = None
+
+        if self._current_bucket is not None and bucket != self._current_bucket:
+            # Bucket changed — emit the completed bar
+            completed = self._build_bar()
+            self._reset()
+
+        # Accumulate into current bucket
+        if self._open is None:
+            self._open = open_price
+        if self._high is None or float(str(high_price)) > float(str(self._high)):
+            self._high = high_price
+        if self._low is None or float(str(low_price)) < float(str(self._low)):
+            self._low = low_price
+        self._close = close_price
+        self._volume += volume
+        self._ts_event = ts_event
+        self._ts_init = ts_init
+        self._current_bucket = bucket
+        self._bar_count += 1
+
+        return completed
+
+    def flush(self) -> Bar | None:
+        """Force-emit a partial bar (e.g., on disconnect). Returns None if empty."""
+        if self._open is None:
+            return None
+        bar = self._build_bar()
+        self._reset()
+        return bar
+
+    def _build_bar(self) -> Bar:
+        """Build a Bar from the current accumulation state."""
+        return Bar(
+            bar_type=self._bar_type,
+            open=self._open,
+            high=self._high,
+            low=self._low,
+            close=self._close,
+            volume=Quantity.from_int(self._volume),
+            ts_event=self._ts_event,
+            ts_init=self._ts_init,
+        )
+
+    def _reset(self) -> None:
+        """Reset accumulation state for a new bucket."""
+        self._open = None
+        self._high = None
+        self._low = None
+        self._close = None
+        self._volume = 0
+        self._ts_event = 0
+        self._ts_init = 0
+        self._current_bucket = None
+        self._bar_count = 0
 
 
 # -------------------------------------------------------------------------------------------------
@@ -122,6 +246,7 @@ class SchwabStreamManager:
         # Subscriptions (thread-safe)
         self._subscribed_symbols: set[str] = set()
         self._subscribed_bar_types: dict[str, set[BarType]] = {}
+        self._accumulators: dict[BarType, BarAccumulator] = {}
         self._lock = threading.Lock()
 
         # Health monitoring
@@ -225,6 +350,11 @@ class SchwabStreamManager:
                 self._subscribed_bar_types[symbol] = set()
             self._subscribed_bar_types[symbol].add(bar_type)
 
+            # Create accumulator for multi-minute bar types
+            interval = _bar_spec_to_interval_minutes(bar_type)
+            if interval > 1 and bar_type not in self._accumulators:
+                self._accumulators[bar_type] = BarAccumulator(bar_type, interval)
+
         # Send subscription if stream is connected and this is a new symbol
         if is_new_symbol and self._connected.is_set() and self._stream:
             self._send_subscription(symbol)
@@ -246,6 +376,7 @@ class SchwabStreamManager:
         with self._lock:
             if symbol in self._subscribed_bar_types:
                 self._subscribed_bar_types[symbol].discard(bar_type)
+                self._accumulators.pop(bar_type, None)
 
                 # If no more bar types for this symbol, fully unsubscribe
                 if not self._subscribed_bar_types[symbol]:
@@ -359,6 +490,22 @@ class SchwabStreamManager:
 
             finally:
                 self._connected.clear()
+
+                # Flush any partial accumulated bars before disconnect
+                with self._lock:
+                    accumulators_snapshot = list(self._accumulators.values())
+                for acc in accumulators_snapshot:
+                    try:
+                        partial = acc.flush()
+                        if partial is not None:
+                            self._pending_callbacks += 1
+                            self._loop.call_soon_threadsafe(
+                                self._on_bar_callback_wrapper,
+                                partial,
+                            )
+                    except Exception as e:
+                        self._log.error(f"Error flushing accumulator: {e}")
+
                 if self._stream:
                     try:
                         # Suppress schwabdev's "Error closing websocket" print
@@ -494,28 +641,50 @@ class SchwabStreamManager:
             ts_event = int(chart_time_ms * 1_000_000)  # ms to ns
             ts_init = self._clock.timestamp_ns()
 
+            # Parse prices once, reuse for all bar types
+            o = Price.from_str(str(open_price))
+            h = Price.from_str(str(high_price))
+            l = Price.from_str(str(low_price))  # noqa: E741
+            c = Price.from_str(str(close_price))
+            v = int(volume)
+
             # Create bars for all subscribed bar types
             for bar_type in bar_types:
                 try:
-                    bar = Bar(
-                        bar_type=bar_type,
-                        open=Price.from_str(str(open_price)),
-                        high=Price.from_str(str(high_price)),
-                        low=Price.from_str(str(low_price)),
-                        close=Price.from_str(str(close_price)),
-                        volume=Quantity.from_int(int(volume)),
-                        ts_event=ts_event,
-                        ts_init=ts_init,
-                    )
+                    interval = _bar_spec_to_interval_minutes(bar_type)
 
-                    self._log.debug(f"Created bar: {bar}")
-
-                    # Thread-safe callback to asyncio context
-                    self._pending_callbacks += 1
-                    self._loop.call_soon_threadsafe(
-                        self._on_bar_callback_wrapper,
-                        bar,
-                    )
+                    if interval <= 1:
+                        # 1-min subscription: emit directly
+                        bar = Bar(
+                            bar_type=bar_type,
+                            open=o,
+                            high=h,
+                            low=l,
+                            close=c,
+                            volume=Quantity.from_int(v),
+                            ts_event=ts_event,
+                            ts_init=ts_init,
+                        )
+                        self._log.debug(f"Created bar: {bar}")
+                        self._pending_callbacks += 1
+                        self._loop.call_soon_threadsafe(
+                            self._on_bar_callback_wrapper,
+                            bar,
+                        )
+                    else:
+                        # Multi-minute: feed 1-min data to accumulator
+                        with self._lock:
+                            accumulator = self._accumulators.get(bar_type)
+                        if accumulator is None:
+                            continue
+                        completed = accumulator.update(o, h, l, c, v, ts_event, ts_init)
+                        if completed is not None:
+                            self._log.debug(f"Accumulated bar: {completed}")
+                            self._pending_callbacks += 1
+                            self._loop.call_soon_threadsafe(
+                                self._on_bar_callback_wrapper,
+                                completed,
+                            )
                 except Exception as e:
                     self._log.error(f"Error creating bar for {symbol}: {e}")
 
