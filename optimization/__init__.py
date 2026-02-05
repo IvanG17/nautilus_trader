@@ -15,8 +15,9 @@ from .data_fetcher import SchwabDataFetcher
 from .metrics import calculate_metrics
 from .optimizer import NautilusOptimizer
 
+
 __all__ = [
-    "SchwabDataFetcher",
     "NautilusOptimizer",
+    "SchwabDataFetcher",
     "calculate_metrics",
 ]

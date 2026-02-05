@@ -145,8 +145,10 @@ def main():
         callback_url=SCHWAB_CALLBACK_URL,
         tokens_db=SCHWAB_TOKENS_DB,
         use_websocket=True,
+        warmup_bars=100,  # Load 100 historical bars for indicator warmup
         instrument_provider=InstrumentProviderConfig(
             load_all=False,
+            load_ids=frozenset([instrument_id]),  # Load the specific instrument
         ),
     )
 
@@ -162,11 +164,12 @@ def main():
         # No exec_clients - signal mode only
     )
 
-    # Configure strategy
+    # Configure strategy (signal mode with $100k simulated cash)
     strategy_config = SuperStratConfig(
         strategy_id=f"SUPERSTRAT-{SYMBOL}",
         instrument_id=instrument_id,
         bar_type=bar_type,
+        signal_mode_cash=100000.0,  # $100k simulated cash for position sizing
         **params,
     )
 

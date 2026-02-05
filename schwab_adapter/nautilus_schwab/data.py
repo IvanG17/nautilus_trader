@@ -293,7 +293,15 @@ class SchwabStreamManager:
                 old_stream = self._stream
                 if old_stream:
                     try:
-                        old_stream.stop()
+                        # Suppress schwabdev's "Error closing websocket" print
+                        import sys
+                        import io
+                        old_stderr = sys.stderr
+                        sys.stderr = io.StringIO()
+                        try:
+                            old_stream.stop()
+                        finally:
+                            sys.stderr = old_stderr
                     except Exception:
                         pass
                     self._stream = None
@@ -308,6 +316,7 @@ class SchwabStreamManager:
                 self._reconnect_count = 0
                 self._circuit_breaker_failures = 0  # Reset on successful connect
                 self._stream_start_time = time.time()
+                self._last_message_time = 0.0  # Reset stale timer for new connection
                 self._initial_data_received = False
                 self._log.info("schwabdev stream connected")
 
@@ -352,7 +361,15 @@ class SchwabStreamManager:
                 self._connected.clear()
                 if self._stream:
                     try:
-                        self._stream.stop()
+                        # Suppress schwabdev's "Error closing websocket" print
+                        import sys
+                        import io
+                        old_stderr = sys.stderr
+                        sys.stderr = io.StringIO()
+                        try:
+                            self._stream.stop()
+                        finally:
+                            sys.stderr = old_stderr
                     except Exception:
                         pass
                     self._stream = None
@@ -372,7 +389,7 @@ class SchwabStreamManager:
             )
             self._log.debug(f"Sent subscription for {symbol}")
         except AttributeError:
-            self._log.warning(f"Stream unavailable for {symbol}")
+            self._log.debug(f"Stream unavailable for {symbol}")
         except Exception as e:
             self._log.error(f"Failed to send subscription for {symbol}: {e}")
 
@@ -392,7 +409,7 @@ class SchwabStreamManager:
             )
             self._log.debug(f"Sent unsubscription for {symbol}")
         except AttributeError:
-            self._log.warning(f"Stream unavailable for {symbol}")
+            self._log.debug(f"Stream unavailable for {symbol}")
         except Exception as e:
             self._log.error(f"Failed to send unsubscription for {symbol}: {e}")
 
@@ -534,13 +551,13 @@ class SchwabStreamManager:
                 ):
                     elapsed_since_start = current_time - self._stream_start_time
                     if elapsed_since_start > self._initial_data_timeout:
-                        self._log.warning(
+                        self._log.info(
                             f"No initial data received after {elapsed_since_start:.0f}s"
                         )
                         initial_timeout_warned = True
                         # Force reconnect if waiting too long for initial data
                         if elapsed_since_start > self._max_stale_time:
-                            self._log.warning("Forcing reconnect due to no initial data")
+                            self._log.info("Forcing reconnect due to no initial data")
                             self.force_reconnect()
                             initial_timeout_warned = False
 
@@ -555,14 +572,20 @@ class SchwabStreamManager:
                         f"Backpressure detected: {self._pending_callbacks} pending callbacks"
                     )
 
+                # Calculate warning threshold as half of max stale time
+                warning_threshold = self._max_stale_time / 2
+
                 if elapsed > self._max_stale_time:
-                    self._log.warning(
-                        f"No stream data for {elapsed:.0f}s, forcing reconnect"
-                    )
-                    self.force_reconnect()
+                    # Only trigger reconnect if not already reconnecting
+                    if not self._force_reconnect.is_set():
+                        self._log.info(
+                            f"No stream data for {elapsed:.0f}s, forcing reconnect"
+                        )
+                        self.force_reconnect()
                     initial_timeout_warned = False  # Reset for new connection
-                elif elapsed > 60:
-                    self._log.warning(
+                elif elapsed > warning_threshold:
+                    # Info level for stale warnings - these are informational during normal operation
+                    self._log.info(
                         f"Stream data stale: {elapsed:.0f}s since last message"
                     )
 

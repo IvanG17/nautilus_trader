@@ -1,0 +1,97 @@
+# config/strategies.yaml
+# Multi-ticker, multi-strategy configuration for live trading
+#
+# Usage:
+#   python examples/schwab_multi_strat_live.py
+#   CONFIG_PATH=config/my_strategies.yaml python examples/schwab_multi_strat_live.py
+
+global:
+  total_cash: 100000
+  allocation: equal_per_ticker  # Divides total_cash by number of tickers
+
+strategies:
+  - name: SuperStrat
+    class: SuperStratStrategy
+    config_class: SuperStratConfig
+    timeframe: 1day
+    tickers:
+      - symbol: ASTS
+        params:
+          atr_period: 13
+          atr_multiplier: 1.74
+          vsa_window: 10
+          vsa_volume_factor: 1.16
+          trailing_stop_atr_mult: 1.74
+          position_size_pct: 0.19
+          donchian_period: 48
+          pyramid_atr_threshold: 0.62
+          pyramid_size_pct: 0.78
+
+      # Example additional tickers (uncomment to use):
+      # - symbol: AAPL
+      #   timeframe: 5min  # Optional: overrides strategy-level timeframe
+      #   params:
+      #     atr_period: 14
+      #     atr_multiplier: 2.0
+      #     vsa_window: 20
+      #     vsa_volume_factor: 1.5
+      #     trailing_stop_atr_mult: 2.0
+      #     position_size_pct: 0.25
+      #     donchian_period: 20
+      #     pyramid_atr_threshold: 1.5
+      #     pyramid_size_pct: 0.5
+
+      # - symbol: MSFT
+      #   params:
+      #     atr_period: 14
+      #     atr_multiplier: 2.0
+      #     vsa_window: 20
+      #     vsa_volume_factor: 1.5
+      #     trailing_stop_atr_mult: 2.0
+      #     position_size_pct: 0.25
+      #     donchian_period: 20
+      #     pyramid_atr_threshold: 1.5
+      #     pyramid_size_pct: 0.5
+
+  # Example KineticTrend strategy (uncomment to use):
+  # - name: KineticTrend
+  #   class: KineticTrendStrategy
+  #   config_class: KineticTrendConfig
+  #   timeframe: 15min
+  #   tickers:
+  #     - symbol: SPY
+  #       params:
+  #         bb_period: 20
+  #         bb_std: 2.0
+  #         atr_period: 14
+  #         atr_stop_multiplier: 2.0
+  #         max_pyramid_levels: 3
+  #         pyramid_threshold: 0.02
+  #         position_size_pct: 0.20
+  #         profit_target_pct: 0.10
+
+  #     - symbol: QQQ
+  #       params:
+  #         bb_period: 25
+  #         bb_std: 2.5
+  #         atr_period: 14
+  #         atr_stop_multiplier: 2.0
+  #         max_pyramid_levels: 3
+  #         pyramid_threshold: 0.02
+  #         position_size_pct: 0.20
+  #         profit_target_pct: 0.10
+
+  # Example FlexibleEntry strategy (uncomment to use):
+  # - name: FlexibleEntry
+  #   class: FlexibleEntryStrategy
+  #   config_class: FlexibleEntryConfig
+  #   timeframe: 1day
+  #   tickers:
+  #     - symbol: NVDA
+  #       params:
+  #         atr_period: 14
+  #         atr_multiplier: 3.0
+  #         vsa_window: 20
+  #         vsa_volume_factor: 1.5
+  #         trailing_stop_atr_mult: 2.0
+  #         position_size_pct: 0.25

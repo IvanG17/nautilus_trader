@@ -1,0 +1,106 @@
+{
+  "wide_search": {
+    "best_sharpe": 28.75012762549215,
+    "best_params": {
+      "bb_period": 17,
+      "bb_std": 1.6278729425623122,
+      "max_pyramid_levels": 7,
+      "pyramid_threshold": 0.07253514583420348,
+      "position_size_pct": 0.46953451144464986,
+      "profit_target_pct": 0.08378302188601665
+    },
+    "fold_results": [
+      {
+        "fold": 1,
+        "sharpe": 30.016558255269075,
+        "return": 0.03465199999999997,
+        "max_dd": 0.0,
+        "trades": 6
+      },
+      {
+        "fold": 2,
+        "sharpe": 27.13456796009275,
+        "return": 0.01176070000000007,
+        "max_dd": 0.0,
+        "trades": 7
+      },
+      {
+        "fold": 3,
+        "sharpe": 29.09925666111462,
+        "return": 0.0219637000000001,
+        "max_dd": 0.0,
+        "trades": 10
+      }
+    ]
+  },
+  "narrow_search": {
+    "best_sharpe": 30.262870777889663,
+    "best_params": {
+      "bb_period": 12,
+      "bb_std": 1.9508230614501205,
+      "max_pyramid_levels": 5,
+      "pyramid_threshold": 0.08411618012680039,
+      "position_size_pct": 0.5946464304249528,
+      "profit_target_pct": 0.09339220009358311
+    },
+    "fold_results": [
+      {
+        "fold": 1,
+        "sharpe": 30.691811177071997,
+        "return": 0.05806220000000001,
+        "max_dd": 0.0,
+        "trades": 6
+      },
+      {
+        "fold": 2,
+        "sharpe": 29.87632624713035,
+        "return": 0.031907399999999905,
+        "max_dd": 0.0,
+        "trades": 9
+      },
+      {
+        "fold": 3,
+        "sharpe": 30.220474909466642,
+        "return": 0.03954160000000004,
+        "max_dd": 0.0,
+        "trades": 10
+      }
+    ]
+  },
+  "final": {
+    "best_sharpe": 30.262870777889663,
+    "best_params": {
+      "bb_period": 12,
+      "bb_std": 1.9508230614501205,
+      "max_pyramid_levels": 5,
+      "pyramid_threshold": 0.08411618012680039,
+      "position_size_pct": 0.5946464304249528,
+      "profit_target_pct": 0.09339220009358311
+    },
+    "fold_results": [
+      {
+        "fold": 1,
+        "sharpe": 30.691811177071997,
+        "return": 0.05806220000000001,
+        "max_dd": 0.0,
+        "trades": 6
+      },
+      {
+        "fold": 2,
+        "sharpe": 29.87632624713035,
+        "return": 0.031907399999999905,
+        "max_dd": 0.0,
+        "trades": 9
+      },
+      {
+        "fold": 3,
+        "sharpe": 30.220474909466642,
+        "return": 0.03954160000000004,
+        "max_dd": 0.0,
+        "trades": 10
+      }
+    ],
+    "avg_return_per_fold": 0.04317039999999998,
+    "avg_trades_per_fold": 8.333333333333334
+  }
+}

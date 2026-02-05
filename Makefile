@@ -706,3 +706,20 @@ help:  #-- Show this help message and exit
 			} \
 		} \
 	}' $(MAKEFILE_LIST)
+
+#== Schwab Trading
+
+.PHONY: schwab-auth
+schwab-auth:  #-- Authenticate with Schwab API (opens browser for OAuth)
+	$(info $(M) Authenticating with Schwab API...)
+	@cd $(CURDIR) && source .venv/bin/activate && python scripts/schwab_auth.py
+
+.PHONY: schwab-status
+schwab-status:  #-- Check Schwab token status
+	@cd $(CURDIR) && source .venv/bin/activate && python scripts/schwab_status.py
+
+.PHONY: schwab-live
+schwab-live:  #-- Run SuperStrat live trading (signal mode)
+	$(info $(M) Starting SuperStrat live trading...)
+	@cd $(CURDIR) && source .venv/bin/activate && set -a && source .env && set +a && \
+		PYTHONUNBUFFERED=1 python examples/schwab_superstrat_live.py

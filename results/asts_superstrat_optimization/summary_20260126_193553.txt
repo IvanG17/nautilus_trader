@@ -1,0 +1,26 @@
+ASTS SuperStrat Optimization Summary
+==================================================
+Date: 2026-01-26T19:35:53.348268
+Symbol: ASTS
+Strategy: SuperStrat (Supertrend + VSA + Donchian + Pyramiding)
+Trials per timeframe: 50
+Walk-forward folds: 3
+
+Enhancements over Flexible Entry:
+  1. Donchian Breakout - Entry on N-period high break
+  2. Pyramiding - Add 50% at +1.5 ATR profit
+
+RECOMMENDED: 5min
+
+Best Parameters:
+  atr_period: 27
+  atr_multiplier: 3.5415586781602713
+  vsa_window: 46
+  vsa_volume_factor: 1.7937925437562607
+  trailing_stop_atr_mult: 1.8896286345254527
+  position_size_pct: 0.4333177332983255
+  donchian_period: 33
+  pyramid_atr_threshold: 1.4541235289945342
+  pyramid_size_pct: 0.5025373942948596
+
+Best Sharpe: 28.116

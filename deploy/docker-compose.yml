@@ -1,42 +1,55 @@
 services:
+  # Trading Bot
+  trading-bot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.bot
+    container_name: trading-bot
+    environment:
+      - SCHWAB_APP_KEY=${SCHWAB_APP_KEY}
+      - SCHWAB_APP_SECRET=${SCHWAB_APP_SECRET}
+      - TIMEFRAME=${TIMEFRAME:-1day}
+    volumes:
+      - bot-logs:/app/logs
+      - schwab-tokens:/root/.schwabdev
+    restart: unless-stopped
+    depends_on:
+      - loki
+
   # Loki - Log aggregation
   loki:
     image: grafana/loki:2.9.0
     container_name: loki
-    ports:
-      - "3100:3100"
     volumes:
       - ./loki-config.yml:/etc/loki/local-config.yaml
       - loki-data:/loki
     command: -config.file=/etc/loki/local-config.yaml
     restart: unless-stopped
 
-  # Promtail - Log collector (tails your bot logs)
+  # Promtail - Log collector
   promtail:
     image: grafana/promtail:2.9.0
     container_name: promtail
     volumes:
       - ./promtail-config.yml:/etc/promtail/config.yml
-      - ../logs:/var/log/trading:ro  # Mount project logs directory
+      - bot-logs:/var/log/trading:ro
     command: -config.file=/etc/promtail/config.yml
     depends_on:
       - loki
     restart: unless-stopped
 
-  # Grafana - Dashboards & Alerting
+  # Grafana - Dashboards & Alerting (exposed to internet)
   grafana:
     image: grafana/grafana:10.2.0
     container_name: grafana
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=trading123
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
       - GF_ALERTING_ENABLED=true
-      - GF_DATE_FORMATS_FULL_DATE=MMM D, YYYY h:mm:ss A
-      - GF_DATE_FORMATS_INTERVAL_HOUR=MMM D h:mm A
-      - GF_DATE_FORMATS_INTERVAL_DAY=MMM D
-      - GF_DATE_FORMATS_DEFAULT_TIMEZONE=America/Chicago
+      - GF_SERVER_ROOT_URL=http://${DROPLET_IP}:3000
+      - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning
@@ -45,5 +58,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  bot-logs:
   loki-data:
   grafana-data:
+  schwab-tokens:

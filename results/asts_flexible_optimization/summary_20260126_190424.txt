@@ -1,0 +1,19 @@
+ASTS Flexible Entry Optimization Summary
+==================================================
+Date: 2026-01-26T19:04:24.817455
+Symbol: ASTS
+Strategy: FlexibleEntry (Supertrend + VSA)
+Trials per timeframe: 50
+Walk-forward folds: 3
+
+RECOMMENDED: 5min
+
+Best Parameters:
+  atr_period: 11
+  atr_multiplier: 2.0827689237781546
+  vsa_window: 16
+  vsa_volume_factor: 1.7226916890042874
+  trailing_stop_atr_mult: 1.5155226584536448
+  position_size_pct: 0.232556542968046
+
+Best Sharpe: 26.617

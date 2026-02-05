@@ -21,9 +21,9 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from nautilus_schwab.config import SchwabDataClientConfig
-from nautilus_schwab.data import SchwabDataClient
-from nautilus_schwab.providers import SchwabInstrumentProvider
+from nautilus_trader.adapters.schwab.config import SchwabDataClientConfig
+from nautilus_trader.adapters.schwab.data import SchwabDataClient
+from nautilus_trader.adapters.schwab.providers import SchwabInstrumentProvider
 from nautilus_trader.live.factories import LiveDataClientFactory
 
 
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Module-level caches for singleton patterns
-SCHWAB_CLIENTS: dict[tuple, schwabdev.Client] = {}
+SCHWAB_CLIENTS: dict[tuple, "schwabdev.Client"] = {}
 SCHWAB_INSTRUMENT_PROVIDERS: dict[tuple, SchwabInstrumentProvider] = {}
 
 
@@ -47,7 +47,7 @@ def get_cached_schwab_client(
     app_secret: str,
     callback_url: str,
     tokens_db: str,
-) -> schwabdev.Client:
+) -> "schwabdev.Client":
     """
     Get or create a cached Schwab API client.
 
@@ -73,9 +73,8 @@ def get_cached_schwab_client(
     client_key = (app_key, callback_url, tokens_db)
 
     if client_key not in SCHWAB_CLIENTS:
-        from pathlib import Path
-
         import schwabdev
+        from pathlib import Path
 
         # Expand ~ in path
         tokens_path = str(Path(tokens_db).expanduser())
@@ -94,9 +93,9 @@ def get_cached_schwab_client(
 
 
 def get_cached_schwab_instrument_provider(
-    client: schwabdev.Client,
-    clock: LiveClock,
-    config: SchwabDataClientConfig,
+    client: "schwabdev.Client",
+    clock: "LiveClock",
+    config: "SchwabDataClientConfig",
 ) -> SchwabInstrumentProvider:
     """
     Get or create a cached Schwab instrument provider.
@@ -149,9 +148,9 @@ class SchwabLiveDataClientFactory(LiveDataClientFactory):
         loop: asyncio.AbstractEventLoop,
         name: str,
         config: SchwabDataClientConfig,
-        msgbus: MessageBus,
-        cache: Cache,
-        clock: LiveClock,
+        msgbus: "MessageBus",
+        cache: "Cache",
+        clock: "LiveClock",
     ) -> SchwabDataClient:
         """
         Create a new Schwab data client.

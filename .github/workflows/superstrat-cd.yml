@@ -1,0 +1,129 @@
+name: SuperStrat CD
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate tag format
+        run: |
+          if [[ ! "${{ github.ref_name }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid tag format. Expected: vX.Y.Z"
+            exit 1
+          fi
+          echo "Deploying version: ${{ github.ref_name }}"
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H 157.245.122.174 >> ~/.ssh/known_hosts
+
+      - name: Write secrets to server
+        run: |
+          ssh gordan@157.245.122.174 "mkdir -p /opt/nautilus"
+          ssh gordan@157.245.122.174 "cat > /opt/nautilus/.env" << 'EOF'
+          ${{ secrets.NAUTILUS_ENV }}
+          EOF
+          ssh gordan@157.245.122.174 "chmod 600 /opt/nautilus/.env"
+
+      - name: Sync code to server
+        run: |
+          rsync -avz --delete \
+            --exclude '.venv' \
+            --exclude '.git' \
+            --exclude '__pycache__' \
+            --exclude '*.pyc' \
+            --exclude 'results/' \
+            --exclude 'data/cache/' \
+            --exclude '.env' \
+            --exclude 'crates/' \
+            --exclude '*.so' \
+            --exclude '*.pyd' \
+            -e ssh \
+            ./ gordan@157.245.122.174:/opt/nautilus/
+
+      - name: Deploy and restart service
+        run: |
+          ssh gordan@157.245.122.174 << 'DEPLOY_SCRIPT'
+            set -e
+            cd /opt/nautilus
+
+            # Create venv if not exists
+            if [ ! -d ".venv" ]; then
+              python3 -m venv .venv
+            fi
+
+            # Activate and install
+            source .venv/bin/activate
+            pip install --upgrade pip
+            pip install nautilus_trader schwabdev pandas numpy python-dotenv optuna
+
+            # Install systemd service if not exists
+            if [ ! -f /etc/systemd/system/nautilus-superstrat.service ]; then
+              sudo cp deploy/nautilus-superstrat.service /etc/systemd/system/
+              sudo systemctl daemon-reload
+              sudo systemctl enable nautilus-superstrat
+            fi
+
+            # Restart service
+            sudo systemctl restart nautilus-superstrat
+          DEPLOY_SCRIPT
+
+      - name: Verify deployment
+        run: |
+          for i in {1..30}; do
+            STATUS=$(ssh gordan@157.245.122.174 "systemctl is-active nautilus-superstrat" 2>/dev/null || echo "inactive")
+            echo "Attempt $i: Status = $STATUS"
+            if [ "$STATUS" = "active" ]; then
+              echo "Service is running!"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Service failed to start"
+          ssh gordan@157.245.122.174 "journalctl -u nautilus-superstrat -n 50 --no-pager" || true
+          exit 1
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          generate_release_notes: true
+          body: |
+            ## SuperStrat Deployment
+
+            Deployed to `gordan-prod` server.
+
+            **Service Status:** Check with `ssh gordan-prod "systemctl status nautilus-superstrat"`
+
+            **Logs:** `ssh gordan-prod "journalctl -u nautilus-superstrat -f"`
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deployment summary
+        run: |
+          echo "## Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Server:** gordan-prod (157.245.122.174)" >> $GITHUB_STEP_SUMMARY
+          echo "**Service:** nautilus-superstrat" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Commands" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "ssh gordan-prod 'systemctl status nautilus-superstrat'" >> $GITHUB_STEP_SUMMARY
+          echo "ssh gordan-prod 'journalctl -u nautilus-superstrat -f'" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

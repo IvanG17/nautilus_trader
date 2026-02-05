@@ -1,0 +1,158 @@
+{
+  "5min": {
+    "best_params": {
+      "atr_period": 27,
+      "atr_multiplier": 3.5415586781602713,
+      "vsa_window": 46,
+      "vsa_volume_factor": 1.7937925437562607,
+      "trailing_stop_atr_mult": 1.8896286345254527,
+      "position_size_pct": 0.4333177332983255,
+      "donchian_period": 33,
+      "pyramid_atr_threshold": 1.4541235289945342,
+      "pyramid_size_pct": 0.5025373942948596
+    },
+    "best_sharpe": 28.11595894596152,
+    "fold_results": [
+      {
+        "fold": 1,
+        "sharpe": 29.656451274336025,
+        "return": 0.028344600000000063,
+        "max_dd": 0.0,
+        "trades": 19
+      },
+      {
+        "fold": 2,
+        "sharpe": 27.610044219849378,
+        "return": 0.013341500000000088,
+        "max_dd": 0.0,
+        "trades": 15
+      },
+      {
+        "fold": 3,
+        "sharpe": 27.081381343699146,
+        "return": 0.011603899999999993,
+        "max_dd": 0.0,
+        "trades": 14
+      }
+    ],
+    "n_trials": 50,
+    "n_bars": 2638
+  },
+  "15min": {
+    "best_params": {
+      "atr_period": 12,
+      "atr_multiplier": 1.4347351455074187,
+      "vsa_window": 40,
+      "vsa_volume_factor": 2.885970952599968,
+      "trailing_stop_atr_mult": 0.5078196628715248,
+      "position_size_pct": 0.1876417350588805,
+      "donchian_period": 22,
+      "pyramid_atr_threshold": 2.759601957388132,
+      "pyramid_size_pct": 0.6500596821278163
+    },
+    "best_sharpe": -5.843174105643402,
+    "fold_results": [
+      {
+        "fold": 1,
+        "sharpe": 23.371303583323947,
+        "return": 0.005579400000000023,
+        "max_dd": 0.0,
+        "trades": 12
+      },
+      {
+        "fold": 2,
+        "sharpe": -19.658988607329807,
+        "return": -0.0032520999999999184,
+        "max_dd": 0.0,
+        "trades": 7
+      },
+      {
+        "fold": 3,
+        "sharpe": -21.241837292924345,
+        "return": -0.004043300000000018,
+        "max_dd": 0.0,
+        "trades": 9
+      }
+    ],
+    "n_trials": 50,
+    "n_bars": 912
+  },
+  "30min": {
+    "best_params": {
+      "atr_period": 7,
+      "atr_multiplier": 1.3159286650722277,
+      "vsa_window": 33,
+      "vsa_volume_factor": 2.100545794795499,
+      "trailing_stop_atr_mult": 0.5015835740553978,
+      "position_size_pct": 0.3727752762572782,
+      "donchian_period": 39,
+      "pyramid_atr_threshold": 2.3684023058952866,
+      "pyramid_size_pct": 0.43449766296931347
+    },
+    "best_sharpe": 8.166438223316568,
+    "fold_results": [
+      {
+        "fold": 1,
+        "sharpe": 27.33206863583923,
+        "return": 0.012376000000000059,
+        "max_dd": 0.0,
+        "trades": 3
+      },
+      {
+        "fold": 2,
+        "sharpe": 26.629445349355752,
+        "return": 0.010403000000000029,
+        "max_dd": 0.0,
+        "trades": 4
+      },
+      {
+        "fold": 3,
+        "sharpe": -29.46219931524528,
+        "return": -0.02576699999999997,
+        "max_dd": 0.0,
+        "trades": 7
+      }
+    ],
+    "n_trials": 50,
+    "n_bars": 458
+  },
+  "1day": {
+    "best_params": {
+      "atr_period": 13,
+      "atr_multiplier": 1.7395951902212436,
+      "vsa_window": 10,
+      "vsa_volume_factor": 1.1595345861535848,
+      "trailing_stop_atr_mult": 1.737969700485607,
+      "position_size_pct": 0.1869445332537918,
+      "donchian_period": 48,
+      "pyramid_atr_threshold": 0.6229045140766449,
+      "pyramid_size_pct": 0.7805956093272741
+    },
+    "best_sharpe": 27.936822066434868,
+    "fold_results": [
+      {
+        "fold": 1,
+        "sharpe": 22.33534525621359,
+        "return": 0.004745299999999989,
+        "max_dd": 0.0,
+        "trades": 1
+      },
+      {
+        "fold": 2,
+        "sharpe": 30.254022784991975,
+        "return": 0.0404737999999999,
+        "max_dd": 0.0,
+        "trades": 2
+      },
+      {
+        "fold": 3,
+        "sharpe": 31.22109815809904,
+        "return": 0.11828019999999989,
+        "max_dd": 0.0,
+        "trades": 2
+      }
+    ],
+    "n_trials": 50,
+    "n_bars": 503
+  }
+}

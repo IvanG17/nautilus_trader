@@ -1,291 +1,177 @@
-# Nautilus Trader - Strategy Development & Backtesting
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Overview
 
-This is a customized Nautilus Trader setup for developing and backtesting trading strategies, with a Schwab data adapter for live market data streaming.
+Customized NautilusTrader fork: high-performance algorithmic trading platform (Rust core + Python API) extended with a Schwab data adapter, three trading strategies, Bayesian optimization, and production deployment infrastructure.
 
-| Component | Purpose |
-|-----------|---------|
-| **Nautilus Trader** | High-performance backtesting engine (Rust core, Python API) |
-| **Schwab Adapter** | Live data streaming from Schwab API |
-| **Optimization** | Bayesian parameter optimization with walk-forward validation |
-| **Strategies** | Custom strategies (SuperStrat, Kinetic Trend, Flexible Entry) |
-
----
-
-## Quick Start
+## Build & Development
 
 ```bash
-cd /Users/iguan/Projects/nautilus_trader
-source .venv/bin/activate
+make install          # Install deps + build (release)
+make build-debug      # Build debug mode (faster, for development)
+make pytest           # Run all Python tests (parallel)
+make cargo-test       # Run all Rust tests
+make check-code       # Clippy + ruff linting
+make format           # Rust nightly + ruff formatting
+make pre-commit       # Pre-commit hooks
+make clean            # Clean build artifacts
 
-# Run backtest optimization
-python scripts/optimize_asts_superstrat.py
+# Single test
+uv run --active --no-sync pytest tests/unit_tests/path/to/test.py::TestClass::test_name -v
 
-# Run live (signal mode - no execution)
+# Single Rust crate
+make cargo-test-crate-nautilus-model
+
+# Schwab utilities
+make schwab-auth      # OAuth authentication
+make schwab-status    # Check token status
+make schwab-live      # Run SuperStrat live
+```
+
+## Architecture
+
+### Core NautilusTrader
+
+Hybrid Rust/Cython/Python:
+- **Rust core** (`crates/`): `nautilus-model`, `nautilus-core`, `nautilus-backtest`, `nautilus-live`, `nautilus-execution`, `nautilus-data`
+- **Cython layer**: PyO3 bindings
+- **Python API** (`nautilus_trader/`): Strategies, backtesting, live trading
+
+### Custom Components (This Fork)
+
+#### Schwab Adapter — Two Implementations
+
+| Location | Purpose |
+|---|---|
+| `schwab_adapter/nautilus_schwab/` | **Primary** — full-featured with threaded WebSocket, circuit breaker, health monitoring, warmup |
+| `nautilus_trader/adapters/schwab/` | **Simplified** — basic asyncio WebSocket, fewer features |
+
+Primary adapter files (`schwab_adapter/nautilus_schwab/`):
+- `config.py` — `SchwabDataClientConfig` with OAuth2 credentials, WebSocket settings, health monitoring params
+- `data.py` — `SchwabDataClient` + `SchwabStreamManager` (daemon thread with `call_soon_threadsafe()` bridge to asyncio)
+- `factories.py` — Factory for creating clients + instrument providers (singleton caching)
+- `providers.py` — `SchwabInstrumentProvider` for loading US equity instruments from Schwab API
+- Data-only: no order execution
+
+#### Trading Strategies (`examples/strategies/`)
+
+| Strategy | File | Description |
+|---|---|---|
+| SuperStrat | `super_strat.py` | Donchian breakout + Supertrend/VSA + pyramiding (+50% on +1.5 ATR profit) |
+| FlexibleEntry | `flexible_entry.py` | Supertrend trend following + VSA climax detection + ATR trailing stops |
+| KineticTrend | `kinetic_trend.py` | Bollinger Bands mean reversion + pyramiding (enter upper band breakout, exit below lower) |
+
+#### Optimization Framework (`optimization/`)
+
+- `optimizer.py` — Bayesian optimization (Optuna TPE sampler) with walk-forward validation
+- `data_fetcher.py` — Schwab REST API data fetching with parquet caching
+- `metrics.py` — Sharpe ratio, total return, max drawdown, win rate, profit factor
+
+### Data Flow
+
+**Backtest**: `scripts/optimize_*.py` → `SchwabDataFetcher` → `NautilusOptimizer` → walk-forward validation → `results/` JSON
+
+**Live (signal mode)**: `TradingNode` → `SchwabDataClient` (WebSocket thread) → `call_soon_threadsafe()` → `Strategy.on_bar()` → signal logged (no execution)
+
+## Running Strategies
+
+```bash
+# Live signals - single ticker
 export SCHWAB_APP_KEY="your_key"
 export SCHWAB_APP_SECRET="your_secret"
 TIMEFRAME=1day python examples/schwab_superstrat_live.py
-```
 
----
+# Live signals - multi-ticker, multi-strategy (reads config/strategies.yaml)
+python examples/schwab_multi_strat_live.py
 
-## Directory Structure
+# Custom config file
+CONFIG_PATH=config/my_strategies.yaml python examples/schwab_multi_strat_live.py
 
-```
-nautilus_trader/
-├── schwab_adapter/              # Custom Schwab integration
-│   └── nautilus_schwab/
-│       ├── config.py            # SchwabDataClientConfig
-│       ├── data.py              # SchwabDataClient (WebSocket streaming)
-│       ├── factories.py         # Client factory for TradingNode
-│       ├── providers.py         # Instrument provider
-│       └── common.py            # Constants, venue ID, timeframes
-│
-├── examples/
-│   ├── strategies/
-│   │   ├── super_strat.py       # SuperStrat (Donchian + Pyramiding)
-│   │   ├── flexible_entry.py    # Base Flexible Entry strategy
-│   │   └── kinetic_trend.py     # Kinetic Trend strategy
-│   ├── schwab_superstrat_live.py    # Live trading script
-│   └── schwab_kinetic_trend_live.py # Example live setup
-│
-├── optimization/
-│   ├── data_fetcher.py          # Fetch historical bars from Schwab
-│   ├── optimizer.py             # NautilusOptimizer (Bayesian + walk-forward)
-│   └── metrics.py               # Performance metrics calculation
-│
-├── scripts/
-│   ├── optimize_asts_superstrat.py  # SuperStrat optimization
-│   ├── optimize_asts_flexible.py    # Flexible Entry optimization
-│   └── optimize_asts_kinetic_wide.py
-│
-├── results/                     # Optimization results (JSON, CSV)
-├── data/cache/                  # Cached historical bars (parquet)
-└── .env                         # Schwab API credentials
-```
-
----
-
-## Strategies
-
-### SuperStrat (Primary)
-
-**Location:** `examples/strategies/super_strat.py`
-
-Aggressive strategy based on Flexible Entry with two enhancements:
-
-1. **Donchian Breakout Entry** - Enter on N-period high breakout (don't wait for Supertrend)
-2. **Pyramiding** - Add 50% position at +1.5 ATR profit, move stop to break-even
-
-**Entry Logic (OR):**
-```
-Entry = (Supertrend uptrend AND no selling climax)
-     OR (Price > Donchian high AND no selling climax)
-```
-
-**Optimal Parameters (ASTS 1day):**
-```python
-atr_period = 13
-atr_multiplier = 1.74
-donchian_period = 48
-pyramid_atr_threshold = 0.62  # ATR profit to trigger add
-pyramid_size_pct = 0.78       # Add 78% of original position
-```
-
-**Backtest Results:**
-| Timeframe | Sharpe | Return |
-|-----------|--------|--------|
-| 5min | 28.1 | +5.3% |
-| 1day | 27.9 | +16.4% |
-
-### Flexible Entry (Base)
-
-**Location:** `examples/strategies/flexible_entry.py`
-
-- Supertrend trend following
-- VSA (Volume Spread Analysis) for climax detection
-- ATR trailing stop
-
-### Kinetic Trend
-
-**Location:** `examples/strategies/kinetic_trend.py`
-
-- Bollinger Bands mean reversion
-- Pyramiding on trend continuation
-- Multiple profit targets
-
----
-
-## How the Backtest Engine Works
-
-```python
-# Simplified core loop
-portfolio = Portfolio(cash=100_000)
-strategy = SuperStrat(params)
-
-for bar in historical_bars:
-    signal = strategy.on_bar(bar)
-
-    if signal == "BUY":
-        execute_simulated_buy(portfolio, bar.close)
-    elif signal == "SELL":
-        execute_simulated_sell(portfolio, bar.close)
-
-    track_equity_curve(portfolio)
-
-calculate_metrics()  # Sharpe, return, drawdown
-```
-
-**Key point:** This is simulation on historical data, not real trading.
-
----
-
-## Live Trading Mode
-
-**Current limitation:** Schwab adapter only streams data - NO order execution.
-
-```
-Schwab WebSocket → Nautilus → Strategy.on_bar() → Signal logged
-                                                      ↓
-                                            Manual execution required
-```
-
-**To run live signals:**
-```bash
-TIMEFRAME=1day python examples/schwab_superstrat_live.py
-```
-
-**Event-driven architecture:**
-- No cron jobs
-- WebSocket streams bars in real-time
-- `on_bar()` called when each bar completes
-- Process runs continuously until Ctrl+C
-
----
-
-## Schwab Adapter
-
-### Configuration
-
-```python
-from nautilus_schwab import SchwabDataClientConfig, SchwabLiveDataClientFactory
-
-config = SchwabDataClientConfig(
-    app_key=os.environ["SCHWAB_APP_KEY"],
-    app_secret=os.environ["SCHWAB_APP_SECRET"],
-    callback_url="https://127.0.0.1",
-    use_websocket=True,
-)
-```
-
-### Data Limits
-
-| Timeframe | Max Historical Data |
-|-----------|---------------------|
-| 1min, 5min, 15min, 30min | **10 days** (Schwab API limit) |
-| 1day | 20 years |
-
-### Token Storage
-
-OAuth2 tokens stored in: `~/.schwabdev/tokens.db`
-
----
-
-## Optimization
-
-### Running Optimization
-
-```bash
+# Backtest optimization
 python scripts/optimize_asts_superstrat.py
 ```
 
-### Parameter Space (Wide)
+### Multi-Strategy Configuration (`config/strategies.yaml`)
 
-```python
-PARAM_SPACE = {
-    "atr_period": ("int", 5, 30),
-    "atr_multiplier": ("float", 1.0, 5.0),
-    "vsa_window": ("int", 5, 50),
-    "vsa_volume_factor": ("float", 1.0, 3.0),
-    "trailing_stop_atr_mult": ("float", 0.5, 4.0),
-    "position_size_pct": ("float", 0.10, 0.50),
-    "donchian_period": ("int", 5, 50),
-    "pyramid_atr_threshold": ("float", 0.5, 3.0),
-    "pyramid_size_pct": ("float", 0.2, 1.0),
-}
+Supports 1-3 strategies with up to 10 tickers each. Cash divided equally among all tickers.
+
+```yaml
+global:
+  total_cash: 100000
+  allocation: equal_per_ticker
+
+strategies:
+  - name: SuperStrat
+    class: SuperStratStrategy
+    config_class: SuperStratConfig
+    timeframe: 1day          # default for all tickers in this strategy
+    tickers:
+      - symbol: ASTS
+        timeframe: 5min      # optional per-ticker override
+        params:
+          atr_period: 13
+          # ... per-ticker parameters
+      - symbol: AAPL
+        # inherits 1day from strategy default
+        params:
+          atr_period: 14
 ```
 
-### Output
+**Valid timeframes**: `5min`, `15min`, `30min`, `1day`
 
-Results saved to `results/asts_superstrat_optimization/`:
-- `optimization_results_TIMESTAMP.json` - Full results
-- `best_params_TIMESTAMP.csv` - Best params by timeframe
-- `summary_TIMESTAMP.txt` - Human-readable summary
+**Strategy/config class registry** (in `schwab_multi_strat_live.py`):
+- `SuperStratStrategy` / `SuperStratConfig`
+- `KineticTrendStrategy` / `KineticTrendConfig`
+- `FlexibleEntryStrategy` / `FlexibleEntryConfig`
 
----
+## Project File Map
 
-## Environment Setup
+```
+schwab_adapter/nautilus_schwab/   # Primary Schwab adapter (threaded WebSocket)
+nautilus_trader/adapters/schwab/  # Simplified Schwab adapter (asyncio)
+examples/strategies/              # Strategy implementations
+examples/schwab_*_live.py         # Live trading runners
+optimization/                     # Bayesian optimization framework
+scripts/optimize_*.py             # Optimization runners per strategy
+scripts/schwab_auth.py            # OAuth2 authentication
+scripts/schwab_status.py          # Token status check
+config/strategies.yaml            # Multi-strategy YAML config
+results/                          # Optimization output (JSON, CSV, summaries)
+tests/custom/                     # Custom strategy tests
+deploy/                           # Digital Ocean production deployment (Docker, systemd)
+monitoring/                       # Local Grafana + Loki log monitoring stack
+.github/workflows/superstrat-*    # CI (ruff, mypy, tests) + CD (deploy to DO)
+run_kinetic_trend.py              # Production KineticTrend wrapper
+```
+
+## Environment
 
 ```bash
-# Create venv
-python -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies
-pip install nautilus_trader schwabdev python-dotenv pandas
-
-# Set credentials
-cp .env.example .env
-# Edit .env with your Schwab credentials
+SCHWAB_APP_KEY=your_app_key       # Required
+SCHWAB_APP_SECRET=your_app_secret # Required
+SCHWAB_CALLBACK_URL=https://127.0.0.1  # Optional (default shown)
+SCHWAB_TOKENS_DB=~/.schwabdev/tokens.db # Optional (default shown)
+CONFIG_PATH=config/strategies.yaml      # Optional (default shown)
+TIMEFRAME=1day                          # For single-ticker live scripts
 ```
 
-### Required Environment Variables
+## Testing
 
 ```bash
-SCHWAB_APP_KEY=your_app_key
-SCHWAB_APP_SECRET=your_app_secret
+make pytest                        # All Python tests
+make cargo-test                    # All Rust tests
+make cargo-test-crate-nautilus-core # Single Rust crate
+
+# Custom strategy tests
+uv run --active --no-sync pytest tests/custom/ -v
 ```
 
----
+## Key Constraints
 
-## Key Files Reference
-
-| File | Purpose |
-|------|---------|
-| `examples/strategies/super_strat.py` | SuperStrat strategy implementation |
-| `examples/schwab_superstrat_live.py` | Live trading runner |
-| `scripts/optimize_asts_superstrat.py` | Optimization script |
-| `optimization/data_fetcher.py` | Historical data fetching |
-| `optimization/optimizer.py` | Bayesian optimization engine |
-| `schwab_adapter/nautilus_schwab/data.py` | Schwab WebSocket client |
-| `schwab_adapter/nautilus_schwab/factories.py` | Client factory |
-
----
-
-## Deployment Notes
-
-### Current Status
-- Runs locally on Mac
-- Not deployed to production server yet
-
-### To Deploy to gordan-prod
-1. Copy nautilus_trader to server
-2. Set up venv and install dependencies
-3. Copy Schwab tokens (`~/.schwabdev/tokens.db`)
-4. Create systemd service
-5. Monitor logs via SSH
-
-### Integration with Gordan
-The Gordan trading bot (`gordan_stocks`) has Alpaca execution. Options:
-- Port SuperStrat to Gordan format for automated execution
-- Or run Nautilus for signals, execute manually
-
----
-
-## Caveats
-
-1. **Backtest ≠ Reality** - No slippage, fees, or liquidity simulation
-2. **Schwab data limit** - Only 10 days of intraday data
-3. **No execution** - Schwab adapter is data-only
-4. **Past performance** - Historical returns don't guarantee future results
+- **Schwab intraday data limit**: 10 days max for 1min-30min bars
+- **No order execution**: Schwab adapter is data-only (signal mode)
+- **Backtest simulation**: No slippage, fees, or liquidity modeling
+- **Threading**: WebSocket runs in dedicated daemon thread due to schwabdev blocking I/O
+- **OAuth2 tokens**: Refresh tokens valid 7 days, access tokens 30 minutes

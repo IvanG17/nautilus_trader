@@ -11,17 +11,13 @@ Supports multiple timeframes with automatic caching to parquet.
 from __future__ import annotations
 
 import os
-from datetime import datetime
-from datetime import timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pandas as pd
 import schwabdev
 
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
-from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 

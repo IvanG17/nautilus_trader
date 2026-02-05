@@ -1,0 +1,45 @@
+# Trading Bot Dockerfile for NautilusTrader
+# This builds the full Rust+Python stack
+
+FROM python:3.11-slim as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    pkg-config \
+    libssl-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /app
+
+# Copy the full project
+COPY . .
+
+# Install uv and build
+RUN pip install uv maturin
+RUN uv pip install --system -e . --no-cache-dir 2>/dev/null || \
+    (pip install maturin && maturin develop --release && pip install -e .)
+
+# Runtime stage
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy installed packages from builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /app /app
+
+# Create logs directory
+RUN mkdir -p /app/logs /root/.schwabdev
+
+# Set environment
+ENV PYTHONUNBUFFERED=1
+
+# Run the trading bot
+CMD ["sh", "-c", "python examples/schwab_superstrat_live.py 2>&1 | tee /app/logs/strat_output.log"]

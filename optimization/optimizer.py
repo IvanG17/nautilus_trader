@@ -16,8 +16,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
-from typing import Callable
-from typing import TYPE_CHECKING
 
 import numpy as np
 import optuna
@@ -29,19 +27,18 @@ from nautilus_trader.config import LoggingConfig
 from nautilus_trader.model import TraderId
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.data import Bar
-from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OmsType
-from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Money
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.trading.strategy import Strategy
 
+
 try:
-    from .metrics import BacktestMetrics, calculate_metrics
+    from .metrics import BacktestMetrics
 except ImportError:
-    from metrics import BacktestMetrics, calculate_metrics
+    from metrics import BacktestMetrics
 
 
 # Suppress Optuna logging noise

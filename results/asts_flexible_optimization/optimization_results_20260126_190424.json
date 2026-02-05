@@ -1,0 +1,146 @@
+{
+  "5min": {
+    "best_params": {
+      "atr_period": 11,
+      "atr_multiplier": 2.0827689237781546,
+      "vsa_window": 16,
+      "vsa_volume_factor": 1.7226916890042874,
+      "trailing_stop_atr_mult": 1.5155226584536448,
+      "position_size_pct": 0.232556542968046
+    },
+    "best_sharpe": 26.616697456438672,
+    "fold_results": [
+      {
+        "fold": 1,
+        "sharpe": 24.71298888805448,
+        "return": 0.007024700000000011,
+        "max_dd": 0.0,
+        "trades": 16
+      },
+      {
+        "fold": 2,
+        "sharpe": 28.16072514198568,
+        "return": 0.015695899999999964,
+        "max_dd": 0.0,
+        "trades": 16
+      },
+      {
+        "fold": 3,
+        "sharpe": 26.976378339275858,
+        "return": 0.011304600000000064,
+        "max_dd": 0.0,
+        "trades": 18
+      }
+    ],
+    "n_trials": 50,
+    "n_bars": 2638
+  },
+  "15min": {
+    "best_params": {
+      "atr_period": 10,
+      "atr_multiplier": 3.591735523787146,
+      "vsa_window": 10,
+      "vsa_volume_factor": 1.2052655822994272,
+      "trailing_stop_atr_mult": 2.5897406674282006,
+      "position_size_pct": 0.22789670929751632
+    },
+    "best_sharpe": 9.550103670569383,
+    "fold_results": [
+      {
+        "fold": 1,
+        "sharpe": 26.917034523635103,
+        "return": 0.011141199999999954,
+        "max_dd": 0.0,
+        "trades": 3
+      },
+      {
+        "fold": 2,
+        "sharpe": -25.966584717444302,
+        "return": -0.008981199999999953,
+        "max_dd": 0.0,
+        "trades": 6
+      },
+      {
+        "fold": 3,
+        "sharpe": 27.699861205517347,
+        "return": 0.01368179999999993,
+        "max_dd": 0.0,
+        "trades": 4
+      }
+    ],
+    "n_trials": 50,
+    "n_bars": 912
+  },
+  "30min": {
+    "best_params": {
+      "atr_period": 17,
+      "atr_multiplier": 2.0050023815363818,
+      "vsa_window": 28,
+      "vsa_volume_factor": 1.4096592767219993,
+      "trailing_stop_atr_mult": 2.3402845700834174,
+      "position_size_pct": 0.23180021421406471
+    },
+    "best_sharpe": -4.981090304706841,
+    "fold_results": [
+      {
+        "fold": 1,
+        "sharpe": -14.726327548348118,
+        "return": -0.0017302000000000406,
+        "max_dd": 0.0,
+        "trades": 2
+      },
+      {
+        "fold": 2,
+        "sharpe": 23.957272602538506,
+        "return": 0.006149400000000024,
+        "max_dd": 0.0,
+        "trades": 1
+      },
+      {
+        "fold": 3,
+        "sharpe": -24.17421596831091,
+        "return": -0.006382799999999988,
+        "max_dd": 0.0,
+        "trades": 1
+      }
+    ],
+    "n_trials": 50,
+    "n_bars": 458
+  },
+  "1day": {
+    "best_params": {
+      "atr_period": 11,
+      "atr_multiplier": 2.1953442280127677,
+      "vsa_window": 24,
+      "vsa_volume_factor": 1.552121994991681,
+      "trailing_stop_atr_mult": 1.6830573522671681,
+      "position_size_pct": 0.24903538202225403
+    },
+    "best_sharpe": 10.650602130753159,
+    "fold_results": [
+      {
+        "fold": 1,
+        "sharpe": -28.71579585976584,
+        "return": -0.01893419999999998,
+        "max_dd": 0.0,
+        "trades": 1
+      },
+      {
+        "fold": 2,
+        "sharpe": 30.517340496508204,
+        "return": 0.049554199999999986,
+        "max_dd": 0.0,
+        "trades": 3
+      },
+      {
+        "fold": 3,
+        "sharpe": 30.15026175551711,
+        "return": 0.03771719999999987,
+        "max_dd": 0.0,
+        "trades": 4
+      }
+    ],
+    "n_trials": 50,
+    "n_bars": 503
+  }
+}

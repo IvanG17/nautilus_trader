@@ -21,12 +21,14 @@ import logging
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from nautilus_schwab.common import SCHWAB_VENUE
+from nautilus_trader.adapters.schwab.common import SCHWAB_VENUE
+from nautilus_trader.adapters.schwab.common import schwab_symbol_to_nautilus
 from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.instruments import Equity
 from nautilus_trader.model.objects import Currency
+from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
@@ -34,7 +36,7 @@ from nautilus_trader.model.objects import Quantity
 if TYPE_CHECKING:
     import schwabdev
 
-    from nautilus_schwab.config import SchwabInstrumentProviderConfig
+    from nautilus_trader.adapters.schwab.config import SchwabInstrumentProviderConfig
     from nautilus_trader.common.component import LiveClock
 
 
@@ -159,9 +161,9 @@ class SchwabInstrumentProvider(InstrumentProvider):
             reference = data.get("reference", {})
             quote = data.get("quote", {})
 
-            # Extract instrument details (reserved for future use)
-            _ = reference.get("description", symbol)
-            _ = reference.get("exchange", "XNAS")
+            # Extract instrument details
+            description = reference.get("description", symbol)
+            exchange = reference.get("exchange", "XNAS")
 
             # Determine price precision from current price
             last_price = quote.get("lastPrice", 0)

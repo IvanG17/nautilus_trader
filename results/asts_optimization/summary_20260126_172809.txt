@@ -1,0 +1,18 @@
+ASTS Kinetic Trend Optimization Summary
+==================================================
+Date: 2026-01-26T17:28:09.997650
+Symbol: ASTS
+Trials per timeframe: 50
+Walk-forward folds: 3
+
+RECOMMENDED: 5min
+
+Best Parameters:
+  bb_period: 17
+  bb_std: 2.9260714596148745
+  max_pyramid_levels: 4
+  pyramid_threshold: 0.03394633936788147
+  position_size_pct: 0.13120372808848732
+  profit_target_pct: 0.0733991780504304
+
+Best Sharpe: 0.000
